@@ -185,6 +185,11 @@ automatically: every newly flaky test becomes one observation.
 ## Legacy repositories
 
 Synarchy's census-based flake lab and its `codex-test`/`codex-profile`
-coordinators predate this design. Until Synarchy has an adapter, each skill
+coordinators predate this design. A checkout without `.quruntul/adapter.py`
 routes Synarchy to its preserved legacy workflow under
-`skills/<name>/references/synarchy.md`. Nothing here changes those workflows.
+`skills/<name>/references/synarchy.md`; a checkout with one uses quruntul, with
+the census still authoritative for deferrals and seeding each probe's first
+status through the adapter's `seed` hook. `$playtest` keeps Synarchy on its own
+harness until its adapter implements `playtest()`, and `$assess-tests` still
+drains the legacy `codex-test` registry separately. `$profile`/`$performance`
+keep their `codex-profile` coordinator in every repository for now.

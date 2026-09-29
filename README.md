@@ -74,8 +74,12 @@ with `name`, `suites(ctx)` and `prepare(ctx, suite)`; see
 examples, selects them exactly, and reads per-example results. Command probes
 report `quruntul-probe/v1` JSON to `$QURUNTUL_PROBE_RESULT`.
 
-Synarchy predates the adapter; each skill routes it to its preserved legacy
-workflow in `skills/<name>/references/synarchy.md`.
+Skills choose by what the checkout contains: with `.quruntul/adapter.py` they use
+quruntul, otherwise Synarchy falls back to its preserved legacy workflow in
+`skills/<name>/references/synarchy.md`. Hetoimasia's adapter is
+[hetoimasia#322](https://github.com/coghex/hetoimasia/pull/322) and Synarchy's is
+[synarchy#2760](https://github.com/coghex/synarchy/pull/2760); `$playtest` keeps
+Synarchy on its own harness either way.
 
 ## Development
 
