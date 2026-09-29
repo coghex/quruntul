@@ -57,6 +57,9 @@ Every test the adapters enumerate is a row in the ledger, identified as
 - `fixing` — a `$deflake` PR is open for it. When that PR merges, the next flake
   selection verifies it on the merged revision: a clean batch makes it stable,
   any failure makes it flaky again.
+- `pending` — its batch completed and it was pending in every trial: this
+  environment never exercises it (a platform-gated or opt-in example). It is not
+  selected again until its suite's inputs change, when it becomes `new`.
 - `retired` — no longer enumerated at the upstream head. History is kept.
 
 Probes (`kind: probe`) carry the same status for flakiness, and additionally a

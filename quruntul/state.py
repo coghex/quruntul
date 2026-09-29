@@ -16,7 +16,7 @@ import uuid
 from quruntul.common import LabError, text_hash, utc
 
 SCHEMA = 1
-STATUSES = ("new", "stable", "flaky", "fixing", "retired")
+STATUSES = ("new", "stable", "flaky", "fixing", "pending", "retired")
 DEFAULT_LEASE = 600
 
 
@@ -182,6 +182,13 @@ class State:
                 else:
                     self.db.execute("UPDATE tests SET last_seen=?, kind=? WHERE id=?", (now, suite["kind"], test_id))
             if upstream:
+                # A test that was pending everywhere is queued again once its
+                # suite's inputs change: it may run in this environment now.
+                previous = self.db.execute("SELECT identity FROM suites WHERE id=?", (suite["id"],)).fetchone()
+                if previous and previous["identity"] and previous["identity"] != identity:
+                    for test_id, row in known.items():
+                        if row["status"] == "pending" and test_id in present:
+                            self._status(test_id, "new", "suite inputs changed since it was pending", {"revision": revision})
                 for test_id, row in known.items():
                     if test_id not in present and row["status"] != "retired":
                         self._status(test_id, "retired", "no longer enumerated at the upstream head", {"revision": revision})

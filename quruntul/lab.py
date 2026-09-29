@@ -440,6 +440,11 @@ class Lab:
                 elif (not failures and row["status"] in ("new", "fixing") and passes == planned
                       and all(t["state"] in ("passed", "failed") for t in trials.values())):
                     became = "stable"
+                elif (not failures and not passes and row["status"] == "new" and complete == planned
+                      and all(t["state"] in ("passed", "failed") for t in trials.values())):
+                    # Pending in every trial: this environment never exercises it.
+                    # It is not measured, so it is neither stable nor new work.
+                    became = "pending"
                 if became:
                     self.state.set_status(test_id, became, f"flake batch {run_id}: {failures} failed of {complete}",
                                           dict(run=run_id, revision=revision))
@@ -608,12 +613,13 @@ class Lab:
             by_suite.setdefault(row["suite"], Counter())[row["status"]] += 1
         lines = ["# Quruntul ledger", "", f"Generated {utc()} from ledger.sqlite3. Do not edit.", "",
                  f"Tests: {dict(Counter(r['status'] for r in tests))}", "", "## Suites", "",
-                 "| Suite | new | stable | flaky | fixing | retired | enumerated | last probe run |",
-                 "|---|---|---|---|---|---|---|---|"]
+                 "| Suite | new | stable | flaky | fixing | pending | retired | enumerated | last probe run |",
+                 "|---|---|---|---|---|---|---|---|---|"]
         for suite in self.state.suites():
             c = by_suite.get(suite["id"], Counter())
             lines.append(f"| {suite['id']} | {c['new']} | {c['stable']} | {c['flaky']} | {c['fixing']} | "
-                         f"{c['retired']} | {suite['enumerated'] or '—'} | {suite['last_test_run'] or '—'} |")
+                         f"{c['pending']} | {c['retired']} | {suite['enumerated'] or '—'} | "
+                         f"{suite['last_test_run'] or '—'} |")
         lines += ["", "## Flaky and fixing", "", "| Test | Status | Failures / trials | Last failure | PR |",
                   "|---|---|---|---|---|"]
         for row in tests:

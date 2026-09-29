@@ -150,6 +150,18 @@ class LabTests(unittest.TestCase):
         second = self.cli("flake")
         self.assertEqual((second["suite"], list(second["summary"]["measured"])), ("unit", ["unit::B/three"]))
 
+    def test_an_always_pending_example_does_not_requeue_its_suite(self):
+        self.spec(dict(examples=["A/one", "A/gated"], pending=["A/gated"]))
+        self.push("a gated example")
+        self.cli("flake", "--target", "unit")
+        self.assertEqual(self.statuses()["unit::A/gated"], "pending")
+        self.assertEqual(self.statuses()["unit::A/one"], "stable")
+        self.assertNotEqual(self.cli("flake").get("suite"), "unit")
+        self.spec(dict(examples=["A/one", "A/gated"]))  # its inputs change: queued again
+        self.push("ungate")
+        self.cli("flake", "--target", "unit")
+        self.assertEqual(self.statuses()["unit::A/gated"], "stable")
+
     def test_a_crash_is_never_counted_as_a_pass(self):
         self.spec(dict(examples=["A/one"], crash_on=[1, 2, 3]))
         self.push("crashy")
@@ -319,3 +331,4 @@ class HookTests(LabTests):
     test_resolve_arg_grammar = None
     test_dirty_checkout_blocks_rather_than_resetting = None
     test_a_large_suite_is_measured_in_slices = None
+    test_an_always_pending_example_does_not_requeue_its_suite = None

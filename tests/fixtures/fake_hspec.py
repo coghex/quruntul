@@ -39,6 +39,7 @@ def main(argv):
         print("0 examples, 0 failures")
         return 1
     failed = [] if dry else [p for p in chosen if trial in spec.get("fail", {}).get(p, [])]
+    pending = set() if dry else set(spec.get("pending", []))
     previous = []
     for path in chosen:
         parts = path.split("/")
@@ -48,7 +49,7 @@ def main(argv):
             shared += 1
         for depth in range(shared, len(groups)):
             print("  " * depth + groups[depth])
-        mark = "✘" if path in failed else "✔"
+        mark = "✘" if path in failed else "‐" if path in pending else "✔"
         print("  " * len(groups) + parts[-1] + f" [{mark}]")
         previous = groups
     print()
