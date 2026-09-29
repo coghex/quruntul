@@ -1,0 +1,6 @@
+interface:
+  display_name: "Playtest"
+  short_description: "Run one bounded naive-player session"
+  default_prompt: "Use $playtest to run one bounded naive-player session and report what the player perceived."
+policy:
+  allow_implicit_invocation: false

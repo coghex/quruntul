@@ -1,0 +1,6 @@
+interface:
+  display_name: "Assess Tests"
+  short_description: "Verify test observations and file approved issues"
+  default_prompt: "Use $assess-tests to verify open quruntul observations and draft issues for approval."
+policy:
+  allow_implicit_invocation: false

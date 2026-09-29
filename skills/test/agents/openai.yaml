@@ -1,0 +1,6 @@
+interface:
+  display_name: "Test"
+  short_description: "Run one due local-only probe and report observations"
+  default_prompt: "Use $test to run the next due probe, interpret it, and attach a quruntul report."
+policy:
+  allow_implicit_invocation: false

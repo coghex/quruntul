@@ -1,0 +1,6 @@
+interface:
+  display_name: "Flake Lab"
+  short_description: "Measure every test once for flakiness and keep the master ledger"
+  default_prompt: "Use $flake to measure the next suite of never-measured tests and report which became stable or flaky."
+policy:
+  allow_implicit_invocation: false

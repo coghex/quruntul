@@ -1,0 +1,6 @@
+interface:
+  display_name: "Deflake"
+  short_description: "Fix a flaky test and open a PR with before/after evidence"
+  default_prompt: "Use $deflake to claim the worst flaky test, fix it, prove the fix, and open a pull request."
+policy:
+  allow_implicit_invocation: false

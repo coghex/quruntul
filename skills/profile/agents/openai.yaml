@@ -1,0 +1,6 @@
+interface:
+  display_name: "Profile"
+  short_description: "Run one reproducible performance experiment"
+  default_prompt: "Use $profile to run one well-formed performance experiment and retain its evidence."
+policy:
+  allow_implicit_invocation: false
