@@ -97,8 +97,11 @@ class Context:
 
     def __init__(self, checkout: Path, revision: str, artifacts: Path | None,
                  runner: Callable[..., dict] | None, log: Callable[[str], None] = print):
+        from quruntul import __version__
         from quruntul.common import digest
         self.digest = digest
+        # An adapter that relies on engine behaviour checks this, e.g. (0, 2, 0).
+        self.version = tuple(int(part) for part in __version__.split("."))
         self.checkout = Path(checkout)
         self.revision = revision
         self.artifacts = artifacts

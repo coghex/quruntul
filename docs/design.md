@@ -136,7 +136,10 @@ sessions provide parallelism.
 
 A consuming repository commits `.quruntul/adapter.py`. The engine imports it
 from the pinned checkout being measured, so the adapter is versioned with the
-code it describes. It defines `adapter()` returning an object with:
+code it describes. `ctx.version` is the engine's version as a tuple; an adapter
+that relies on newer engine behaviour refuses an older engine. 0.2.0 added the
+rule that exact per-test selection supersedes a suite's own `--match`
+selectors (its `--skip` selectors still apply), which profile suites need. It defines `adapter()` returning an object with:
 
 - `name` — the repository's name.
 - `suites(ctx)` — every suite at the checkout: id, kind (`ci`/`probe`),
