@@ -63,6 +63,15 @@ class HspecTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             hspec.parse_failure_report("nothing")
 
+    def test_exact_selection_supersedes_a_profile_match_but_keeps_its_skips(self):
+        profile = ["--match", "/P/", "--skip", "/P/slow/", "--match=/Q/", "--times"]
+        selected = hspec.trial_argv("exe", ["P/a"], 1, "/r", None, profile)
+        self.assertEqual([a for a in selected if a.startswith("/") and a != "/r"], ["/P/a/", "/P/slow/"])
+        self.assertNotIn("--match=/Q/", selected)
+        self.assertIn("--times", selected)
+        whole = hspec.trial_argv("exe", None, 1, "/r", None, profile)
+        self.assertEqual(whole[-len(profile):], profile)
+
     def test_selection_is_exact_by_path(self):
         argv = hspec.trial_argv("exe", ["A/b"], 7, "/tmp/r", ["-N2"], ["--extra"])
         self.assertIn("--seed=7", argv)

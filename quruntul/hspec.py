@@ -34,12 +34,32 @@ def select_argv(paths: list[str]) -> list[str]:
     return argv
 
 
+def without_matches(options: list[str]) -> list[str]:
+    """A suite's options with its `--match` selectors removed; `--skip` and the rest stay."""
+    kept, index = [], 0
+    while index < len(options):
+        option = options[index]
+        if option in ("--match", "-m"):
+            index += 2
+            continue
+        if not option.startswith("--match="):
+            kept.append(option)
+        index += 1
+    return kept
+
+
 def trial_argv(executable: str, paths: list[str] | None, seed: int, failure_report: str,
                rts: list[str] | None = None, extra: list[str] | None = None) -> list[str]:
+    """One trial. Hspec ORs every --match, so when exact tests are selected a
+    suite's own profile selectors are dropped: the selected paths came from that
+    profile's enumeration already, and keeping them would widen the trial to the
+    whole profile. The suite's --skip selectors still apply."""
     argv = base_argv(executable) + ["--fail-on=empty", f"--seed={seed}", f"--failure-report={failure_report}"]
+    options = list(extra or [])
     if paths:
         argv += select_argv(paths)
-    argv += list(extra or [])
+        options = without_matches(options)
+    argv += options
     if rts:
         argv += ["+RTS", *rts, "-RTS"]
     return argv
