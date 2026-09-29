@@ -137,15 +137,26 @@ code it describes. It defines `adapter()` returning an object with:
 
 - `name` — the repository's name.
 - `suites(ctx)` — every suite at the checkout: id, kind (`ci`/`probe`),
-  framework (`hspec`/`command`), description, area, platforms, desktop flag,
-  trial and batch limits, and a source identity.
+  framework, description, area, platforms, desktop flag, trial and batch
+  limits, `batch_tests` (at most this many unmeasured tests per flake batch, so
+  a large suite is measured in slices), and a source identity. Frameworks:
+  `hspec` (each example a test), `command` (each declared check a test) and
+  `exit` (one test, `run`, decided by the exit status alone).
 - `prepare(ctx, suite)` — build it (through `ctx.run`, so the guardian owns the
   process) and return a `Prepared`: the base argv, working directory,
   environment, and provenance (executable hash, build argv).
 - `consent(ctx, suite)` — environment additions for a desktop suite, and a
   wrapper argv (e.g. an isolated display) where the platform needs one.
-- Optional: `flake_trials`, `refresh_days`, `profile_workloads()`,
-  `playtest()`.
+- Optional: `flake_trials`, `refresh_days`, `playtest()`, and three hooks,
+  each called as `hook(ctx, suite, trial)`:
+  - `trial_env` — extra environment for one trial (`trial` has `number`,
+    `prefix` — the trial's artifact path prefix — and `seed`);
+  - `outcomes` — read a `command` suite's checks from the probe's own protocol,
+    returning `{check: passed|failed|missing|unproven}`, or `None` when the
+    trial left nothing readable;
+  - `seed` — `{path: {status, reason, evidence}}` for tests the ledger has just
+    met, carrying an older lab's verdicts over. Only `new` tests are seeded,
+    only to `stable` or `flaky`, and each seed is a recorded status event.
 
 For Hspec suites the engine does the rest: enumeration (`--dry-run
 --format=checks`), exact per-test selection (`--match /path/`), per-trial

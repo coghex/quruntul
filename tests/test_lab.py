@@ -138,6 +138,18 @@ class LabTests(unittest.TestCase):
         self.assertNotIn("/A/one/", argv)
         self.assertEqual(self.statuses()["unit::B/four"], "stable")
 
+    def test_a_large_suite_is_measured_in_slices(self):
+        adapter = (self.work / ".quruntul" / "adapter.py").read_text()
+        (self.work / ".quruntul" / "adapter.py").write_text(
+            adapter.replace("batch_seconds=300, priority=20)", "batch_seconds=300, priority=20, batch_tests=2)"))
+        git(self.work, "commit", "-qam", "slice the unit suite")
+        git(self.work, "push", "-q", "origin", "master")
+        first = self.cli("flake")
+        self.assertEqual(sorted(first["summary"]["measured"]), ["unit::A/one", "unit::A/two"])
+        self.assertEqual(self.statuses()["unit::B/three"], "new")
+        second = self.cli("flake")
+        self.assertEqual((second["suite"], list(second["summary"]["measured"])), ("unit", ["unit::B/three"]))
+
     def test_a_crash_is_never_counted_as_a_pass(self):
         self.spec(dict(examples=["A/one"], crash_on=[1, 2, 3]))
         self.push("crashy")
@@ -229,3 +241,81 @@ class LabTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+HOOKED_ADAPTER = '''
+import json, sys
+from pathlib import Path
+
+class Hooked:
+    name = "hooked"
+    flake_trials = 2
+
+    def suites(self, ctx):
+        return [ctx.Suite(id="legacy", kind="probe", framework="exit", description="an exit-status probe",
+                          identity=ctx.digest((ctx.checkout / "legacy.py").read_text()), trial_seconds=30,
+                          batch_seconds=300, priority=30),
+                ctx.Suite(id="events", kind="ci", framework="command", description="a probe with its own protocol",
+                          identity=ctx.digest((ctx.checkout / "events.py").read_text()), checks=["alpha", "beta"],
+                          trial_seconds=30, batch_seconds=300, priority=20)]
+
+    def prepare(self, ctx, suite):
+        script = "legacy.py" if suite.id == "legacy" else "events.py"
+        return ctx.Prepared(argv=[sys.executable, str(ctx.checkout / script)], cwd=str(ctx.checkout), environment={})
+
+    def trial_env(self, ctx, suite, trial):
+        return {"FIXTURE_EVENTS": trial["prefix"] + ".events.jsonl"} if suite.id == "events" else {}
+
+    def outcomes(self, ctx, suite, trial):
+        path = Path(trial["prefix"] + ".events.jsonl")
+        if not path.exists():
+            return None
+        return {e["check"]: e["outcome"] for e in map(json.loads, path.read_text().splitlines())}
+
+    def seed(self, ctx, suite, trial):
+        if suite.id == "events":
+            return {"beta": dict(status="flaky", reason="census: 3 of 10 failed", evidence={"runs": 10})}
+        return {}
+
+def adapter():
+    return Hooked()
+'''
+
+LEGACY = "import os, sys\nsys.exit(1 if os.environ.get('QURUNTUL_TRIAL') == '2' else 0)\n"
+EVENTS = ('import json, os\n'
+          'with open(os.environ["FIXTURE_EVENTS"], "w") as f:\n'
+          '    f.write(json.dumps({"check": "alpha", "outcome": "passed"}) + "\\n")\n')
+
+
+class HookTests(LabTests):
+    def setUp(self):
+        super().setUp()
+        (self.work / ".quruntul" / "adapter.py").write_text(HOOKED_ADAPTER)
+        (self.work / "legacy.py").write_text(LEGACY)
+        (self.work / "events.py").write_text(EVENTS)
+        git(self.work, "add", "-A")
+        git(self.work, "commit", "-qm", "hooked adapter")
+        git(self.work, "push", "-q", "origin", "master")
+
+    def test_exit_status_suites_seeding_and_adapter_read_checks(self):
+        legacy = self.cli("flake")
+        self.assertEqual(legacy["suite"], "legacy")
+        self.assertEqual(self.statuses()["legacy::run"], "flaky")  # trial 2 exits 1
+        events = self.cli("flake")
+        self.assertEqual(events["suite"], "events")
+        statuses = self.statuses()
+        # beta was seeded flaky and so never measured; alpha passed every trial.
+        self.assertEqual((statuses["events::alpha"], statuses["events::beta"]), ("stable", "flaky"))
+        self.assertEqual(list(events["summary"]["measured"]), ["events::alpha"])
+        seeded = [e for e in self.cli("tests") if e["id"] == "events::beta"][0]
+        self.assertEqual(seeded["trials"], 0)
+
+    # The inherited end-to-end examples assume the plain fixture adapter.
+    test_flake_measures_each_test_once_then_only_new_ones = None
+    test_a_crash_is_never_counted_as_a_pass = None
+    test_owner_marks_and_the_deflake_handoff = None
+    test_probe_run_report_and_assessment = None
+    test_ci_suites_are_never_test_lane_targets = None
+    test_resolve_arg_grammar = None
+    test_dirty_checkout_blocks_rather_than_resetting = None
+    test_a_large_suite_is_measured_in_slices = None

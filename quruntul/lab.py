@@ -139,6 +139,8 @@ class Lab:
         return run
 
     def prepare(self, adapter, suite, checkout, revision, run_id, owner) -> adapters.Prepared:
+        self.adapter, self.adapter_ctx = adapter, adapters.Context(checkout, revision, self.directory / "runs" / run_id,
+                                                                   self._runner(run_id, owner), self.log)
         """Build under the checkout's build claim; waits for another build, never races it."""
         resource = "build:" + revision
         waited = 0.0
@@ -236,13 +238,18 @@ class Lab:
             prepared = self.prepare(adapter, suite, checkout, revision, run_id, owner)
             paths = self._enumerate(suite, prepared, run_id, owner, artifacts)
             change = self.state.enumerated(suite.record(), suite.identity, revision, paths, upstream)
+            self._seed(suite, change["added"])
             rows = {r["id"]: r for r in self.state.tests(suite=suite.id)}
             merged = self.merged_fixing()
             if explicit_test:
                 selected = [explicit_test]
             else:
-                selected = [i for i, r in rows.items() if r["status"] == "new"
-                            or (r["status"] == "fixing" and i in merged)]
+                order = {f"{suite.id}::{p}": n for n, p in enumerate(paths)}
+                verify = [i for i, r in rows.items() if r["status"] == "fixing" and i in merged]
+                fresh = sorted((i for i, r in rows.items() if r["status"] == "new"), key=lambda i: order.get(i, 1 << 30))
+                if suite.batch_tests:
+                    fresh = fresh[:max(0, suite.batch_tests - len(verify))]
+                selected = verify + fresh
                 if explicit and not selected:
                     selected = [i for i, r in rows.items() if r["status"] != "retired"]
             self.state.update_run(run_id, self.state.run(run_id)["document"] | dict(
@@ -284,7 +291,7 @@ class Lab:
                     ledger=str(self.render()))
 
     def _enumerate(self, suite, prepared, run_id, owner, artifacts) -> list[str]:
-        if suite.framework == "command":
+        if suite.framework in ("command", "exit"):
             return list(suite.checks)
         argv = prepared.wrapper + _launch(prepared, hspec.enumerate_argv(prepared.argv[0], prepared.argv[1:]))
         result = process.run(argv, Path(prepared.cwd), _environment(prepared.environment), artifacts / "enumerate",
@@ -306,7 +313,9 @@ class Lab:
             name = f"trial-{number:04}"
             seed = random.SystemRandom().randrange(1, 2 ** 31)
             env = dict(prepared.environment, QURUNTUL_TRIAL=str(number), QURUNTUL_SEED=str(seed),
-                       QURUNTUL_PROBE_RESULT=str(artifacts / f"{name}.checks.json"))
+                       QURUNTUL_PROBE_RESULT=str(artifacts / f"{name}.checks.json"),
+                       QURUNTUL_TRIAL_PREFIX=str(artifacts / name))
+            env.update(self._hook("trial_env", suite, dict(number=number, prefix=str(artifacts / name), seed=seed)) or {})
             if suite.framework == "hspec":
                 failure_report = artifacts / f"{name}.failures"
                 argv = prepared.wrapper + _launch(prepared, hspec.trial_argv(
@@ -319,7 +328,8 @@ class Lab:
             result = process.run(argv, Path(prepared.cwd), _environment(env), artifacts / name, suite.trial_seconds,
                                  lambda: self.state.run_heartbeat(run_id, owner))
             result["seed"] = seed
-            outcomes = self._outcomes(suite, result, selected, failure_report, artifacts / f"{name}.checks.json")
+            outcomes = self._outcomes(suite, result, selected, failure_report, artifacts / f"{name}.checks.json",
+                                      dict(number=number, prefix=str(artifacts / name), seed=seed))
             self.state.finish_trial(run_id, number, result, outcomes)
             failed = sum(1 for o in outcomes.values() if o == "failed")
             self.log(f"{suite.id} {number}/{trials}: {result['outcome']}, {failed} failed of {len(selected)} "
@@ -328,7 +338,18 @@ class Lab:
                 return ("interrupted" if result["outcome"] == "interrupted" else "blocked"), result["outcome"]
         return state_name, detail
 
-    def _outcomes(self, suite, result, selected, failure_report, checks_path) -> dict[str, str]:
+    def _hook(self, name, suite, trial):
+        """An optional adapter hook; its failure is recorded against the trial, never silently ignored."""
+        adapter = getattr(self, "adapter", None)
+        function = getattr(adapter, name, None) if adapter is not None else None
+        if function is None:
+            return None
+        try:
+            return function(self.adapter_ctx, suite, trial)
+        except Exception as error:
+            raise LabError(f"adapter {name} failed for {suite.id}: {type(error).__name__}: {error}") from error
+
+    def _outcomes(self, suite, result, selected, failure_report, checks_path, trial=None) -> dict[str, str]:
         """Each selected test's outcome in one trial. Absence after a crash is 'incomplete', never 'passed'."""
         by_path = {self.state.test(t)["path"]: t for t in selected}
         outcomes = {}
@@ -349,6 +370,23 @@ class Lab:
                 else:
                     outcomes[test_id] = ("missing" if result["outcome"] in ("passed", "failed") else "incomplete")
             return outcomes
+        if suite.framework == "exit":
+            outcome = {"passed": "passed", "failed": "failed", "crashed": "failed", "timeout": "failed"}.get(
+                result["outcome"], "incomplete")
+            return {test_id: outcome for test_id in selected}
+        if getattr(getattr(self, "adapter", None), "outcomes", None) is not None:
+            checks = self._hook("outcomes", suite, dict(trial or {}, result=result))
+            if checks is None:
+                if result["outcome"] in ("passed", "failed"):
+                    result["outcome"], result["error"] = "harness-error", "the adapter could not read this trial's checks"
+                return {t: "incomplete" for t in selected}
+            unknown = set(checks) - set(suite.checks)
+            if unknown or any(v not in ("passed", "failed", "unproven", "missing") for v in checks.values()):
+                result["outcome"], result["error"] = "harness-error", f"adapter reported unknown checks {sorted(unknown)}"
+                return {t: "incomplete" for t in selected}
+            mapped = {"passed": "passed", "failed": "failed", "missing": "failed", "unproven": "incomplete"}
+            return {test_id: mapped[checks[path]] if path in checks else "incomplete"
+                    for path, test_id in by_path.items()}
         try:
             document = json.loads(Path(checks_path).read_text())
             checks = document["checks"]
@@ -363,6 +401,23 @@ class Lab:
                 result["outcome"], result["error"] = "harness-error", f"invalid probe report: {error}"
             return {t: "incomplete" for t in selected}
         return {test_id: checks[path] if checks[path] != "unproven" else "incomplete" for path, test_id in by_path.items()}
+
+    def _seed(self, suite, added: list[str]) -> None:
+        """Carry an older lab's verdicts into tests the ledger has only just met.
+
+        Only a test that is still `new` is seeded, and only to stable or flaky,
+        each with the adapter's reason and evidence recorded as a status event.
+        """
+        if not added:
+            return
+        seeds = self._hook("seed", suite, dict(added=[self.state.test(t)["path"] for t in added])) or {}
+        for test_id in added:
+            row = self.state.test(test_id)
+            seed = seeds.get(row["path"])
+            if not seed or row["status"] != "new" or seed.get("status") not in ("stable", "flaky"):
+                continue
+            self.state.set_status(test_id, seed["status"], "seeded: " + str(seed.get("reason", "")),
+                                  dict(seed=seed.get("evidence", {})))
 
     def _decide(self, suite, run_id, revision, selected, upstream, explicit) -> dict:
         """Counters for every selected test; status changes only for an upstream-head batch."""

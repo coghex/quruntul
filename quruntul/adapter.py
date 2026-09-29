@@ -27,7 +27,7 @@ class Suite:
 
     id: str
     kind: str  # "ci": CI runs it; "probe": local-only, never CI
-    framework: str  # "hspec" or "command"
+    framework: str  # "hspec", "command" (declared checks) or "exit" (one test: the exit status)
     description: str
     area: str = ""
     platforms: list[str] = field(default_factory=lambda: ["Darwin", "Linux"])
@@ -38,6 +38,9 @@ class Suite:
     rts: list[str] = field(default_factory=list)
     checks: list[str] = field(default_factory=list)  # command probes: declared stable check ids
     priority: int = 10
+    # At most this many unmeasured tests per flake batch (0: no limit). A large
+    # suite is then measured in slices, in suite order, one batch at a time.
+    batch_tests: int = 0
     data: dict = field(default_factory=dict)  # adapter-private details, echoed back to prepare()
 
     def validate(self) -> "Suite":
@@ -45,8 +48,8 @@ class Suite:
             raise LabError(f"suite id must be a stable lowercase identifier: {self.id!r}")
         if self.kind not in ("ci", "probe"):
             raise LabError(f"{self.id}: kind must be ci or probe")
-        if self.framework not in ("hspec", "command"):
-            raise LabError(f"{self.id}: framework must be hspec or command")
+        if self.framework not in ("hspec", "command", "exit"):
+            raise LabError(f"{self.id}: framework must be hspec, command or exit")
         if not self.description.strip():
             raise LabError(f"{self.id}: a suite needs a description")
         if not self.platforms or not all(p in ("Darwin", "Linux") for p in self.platforms):
@@ -55,8 +58,12 @@ class Suite:
             raise LabError(f"{self.id}: need 1 <= trial_seconds <= batch_seconds <= 86400")
         if self.framework == "command" and (not self.checks or len(set(self.checks)) != len(self.checks)):
             raise LabError(f"{self.id}: a command probe declares distinct stable check ids")
+        if self.framework == "exit":
+            self.checks = ["run"]
         if not self.identity:
             raise LabError(f"{self.id}: a suite needs a source identity")
+        if self.batch_tests < 0:
+            raise LabError(f"{self.id}: batch_tests must be zero (no limit) or positive")
         return self
 
     def record(self) -> dict:

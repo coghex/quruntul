@@ -14,8 +14,9 @@ playtest checks perception.
 
 Resolve the Git top level and read its `AGENTS.md`.
 
-- **Synarchy:** read [references/synarchy.md](references/synarchy.md) completely
-  and follow it. Its harness (`tools/playtest/`) and fixed player profiles are
+- **Synarchy** (whether or not it has a quruntul adapter, until that adapter
+  implements `playtest()`): read [references/synarchy.md](references/synarchy.md)
+  completely and follow it. Its harness (`tools/playtest/`) and fixed player profiles are
   the working implementation. For `$playtest N`, run it once per iteration
   under the loop rules in the installed `$test` skill.
 - **`.quruntul/adapter.py` exists:** read the adapter. If it defines no
