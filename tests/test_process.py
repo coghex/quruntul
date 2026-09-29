@@ -72,10 +72,13 @@ class GuardianTests(unittest.TestCase):
         script.write_text(_HOLDS_EXITED_MEMBER)
         holder = None
         try:
-            result = self.run_child("", timeout=2, command=[sys.executable, str(script), str(status), str(release)])
+            # The deadline must outlast the fixture's own setup (two forks and a
+            # waitid) on a slow hosted runner; the leader then sleeps into it.
+            result = self.run_child("", timeout=8, command=[sys.executable, str(script), str(status), str(release)])
             early = Path(str(status) + ".holder")
             if early.exists():
                 holder = int(early.read_text())
+            self.assertTrue(status.exists(), "the exited member was not parked before the deadline")
             info = {k: int(v) for k, v in (line.split("=", 1) for line in status.read_text().splitlines())}
             holder = info["holder"]
             self.assertEqual(result["outcome"], "timeout", result.get("error"))
