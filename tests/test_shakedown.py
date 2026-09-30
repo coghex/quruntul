@@ -81,11 +81,13 @@ def adapter():
 # The wrapper starts the executable itself (launches_executable=False).
 WRAP = "import os, sys\nos.environ['FIXTURE_WRAPPED'] = '1'\nos.execv(sys.argv[1], sys.argv[1:])\n"
 # A command suite writes its checks for the adapter's outcomes hook; an exit suite only exits.
+# Checks are a mapping, or a list of [check, outcome] pairs when a key must not be a string.
 SCRIPT = ('import json, os, sys\n'
           'checks = json.loads(os.environ["FIXTURE_CHECKS"])\n'
-          'if checks.pop("__none__", None) is None:\n'
+          'pairs = checks if isinstance(checks, list) else list(checks.items())\n'
+          'if not any(check == "__none__" for check, _ in pairs):\n'
           '    with open(os.environ["FIXTURE_EVENTS"], "w") as f:\n'
-          '        for check, outcome in checks.items():\n'
+          '        for check, outcome in pairs:\n'
           '            f.write(json.dumps({"check": check, "outcome": outcome}) + "\\n")\n'
           'sys.exit(int(os.environ["FIXTURE_EXIT"]))\n')
 UNIT = dict(examples=["A/one", "A/two", "B/three"])
@@ -257,7 +259,7 @@ class ShakedownTests(ShakedownFixture):
         garbled = suites["garbled"]
         self.assertEqual(self.problems(garbled), [("incomplete", []), ("failed", ["garbled::A/two"])])
         self.assertEqual((garbled["problems"][0]["outcome"], garbled["problems"][0]["detail"]),
-                         ("harness-error", "unreadable failure report"))
+                         ("harness-error", "unreadable failure report (ValueError)"))
         # The adapter could read nothing from a command suite: a harness error, and no test has a result.
         silent = suites["silent"]
         self.assertEqual(self.problems(silent), [("incomplete", ["silent::alpha", "silent::beta"])])
@@ -328,6 +330,74 @@ class ShakedownTests(ShakedownFixture):
         self.assertEqual(run["state"], "interrupted")
         self.assertEqual([t["state"] for t in run["trials"]], ["passed", "interrupted"])
         self.assertEqual(sorted(self.observations(result)), ["stopped"])
+
+    def trial(self, result, suite_id):
+        run = self.cli("show", result["run_id"])
+        [trial] = [t for t in run["trials"] if t["document"]["suite"] == suite_id]
+        outcomes = {r["test_id"]: r["outcome"] for r in run["results"] if r["number"] == trial["number"]}
+        return trial, outcomes
+
+    def test_a_failure_report_that_cannot_be_read_keeps_the_failures_the_log_shows(self):
+        # The failure report's path is a directory, so reading it raises an OSError.
+        self.declare([dict(id="unreadable", data=dict(spec="unreadable")), dict(id="unit")],
+                     dict(unreadable=dict(UNIT, fail={"A/two": [1]}, report_dir=True)))
+        result = self.shake()
+        self.assertEqual((result["outcome"], result["suites"]["unit"]["result"]), ("complete", "clean"))
+        entry = result["suites"]["unreadable"]
+        self.assertEqual(self.problems(entry), [("incomplete", []), ("failed", ["unreadable::A/two"])])
+        self.assertEqual(entry["problems"][0]["outcome"], "harness-error")
+        self.assertEqual(entry["problems"][0]["detail"], "unreadable failure report (IsADirectoryError)")
+        trial, outcomes = self.trial(result, "unreadable")
+        # The log's results are recorded, and the guardian's record of the process is kept beside the error.
+        self.assertEqual(outcomes, {"unreadable::A/one": "passed", "unreadable::A/two": "failed",
+                                    "unreadable::B/three": "passed"})
+        document = trial["document"]
+        self.assertEqual((trial["state"], document["guardian_outcome"], document["returncode"]),
+                         ("harness-error", "failed", 1))
+        self.assertTrue(document["log_sha256"])
+        self.assertIn("IsADirectoryError", document["failure_report_error"])
+        observed = self.observations(result)
+        self.assertEqual(sorted(observed), ["unreadable"])
+        self.assertEqual(observed["unreadable"]["document"]["title"],
+                         "shakedown of unreadable: incomplete (also failed)")
+
+    def test_an_interrupted_trial_keeps_its_logged_failures_when_its_failure_report_cannot_be_read(self):
+        self.declare([dict(id="stopped", data=dict(spec="stopped")), dict(id="later")],
+                     dict(stopped=dict(UNIT, fail={"A/one": [1]}, report_dir=True,
+                                       stop=dict(after="A/two", how="interrupt"))))
+        os.environ["FIXTURE_INTERRUPT_PID"] = str(os.getpid())
+        try:
+            result = self.shake(code=1)
+        finally:
+            del os.environ["FIXTURE_INTERRUPT_PID"]
+        self.assertEqual({k: v["result"] for k, v in result["suites"].items()},
+                         dict(stopped="incomplete", later="not-run"))
+        stopped = result["suites"]["stopped"]
+        self.assertEqual(self.problems(stopped), [("incomplete", ["stopped::B/three"]), ("failed", ["stopped::A/one"])])
+        self.assertEqual(stopped["problems"][0]["outcome"], "interrupted")
+        trial, outcomes = self.trial(result, "stopped")
+        self.assertEqual(outcomes, {"stopped::A/one": "failed", "stopped::A/two": "passed",
+                                    "stopped::B/three": "incomplete"})
+        self.assertEqual((trial["state"], trial["document"]["guardian_outcome"]), ("interrupted", "interrupted"))
+        self.assertIn("IsADirectoryError", trial["document"]["failure_report_error"])
+
+    def test_malformed_hook_keys_are_this_suites_harness_error_and_later_suites_still_run(self):
+        # The outcomes hook returns {"alpha": "failed", 1: "passed", "unknown": "passed"}.
+        self.declare([dict(id="mixed", framework="command", checks=["alpha", "beta"],
+                           data=dict(checks=[["alpha", "failed"], [1, "passed"], ["unknown", "passed"]])),
+                      dict(id="unit")])
+        result = self.shake()
+        self.assertEqual((result["outcome"], result["interpretation"]), ("complete", "observations"))
+        self.assertEqual({k: v["result"] for k, v in result["suites"].items()}, dict(mixed="incomplete", unit="clean"))
+        mixed = result["suites"]["mixed"]
+        # The readable failure is kept; the check the malformed report cannot vouch for has no result.
+        self.assertEqual(self.problems(mixed), [("incomplete", ["mixed::beta"]), ("failed", ["mixed::alpha"])])
+        self.assertEqual(mixed["problems"][0]["outcome"], "harness-error")
+        self.assertIn("unknown checks ['unknown', 1]", mixed["problems"][0]["detail"])
+        trial, outcomes = self.trial(result, "mixed")
+        self.assertEqual(outcomes, {"mixed::alpha": "failed", "mixed::beta": "incomplete"})
+        self.assertEqual((trial["state"], trial["document"]["guardian_outcome"]), ("harness-error", "passed"))
+        self.assertEqual(sorted(self.observations(result)), ["mixed"])
 
     def test_deferred_suites_are_skipped_and_cannot_be_targeted(self):
         self.declare([dict(id="unit"), dict(id="later", data=dict(spec="spec"))])

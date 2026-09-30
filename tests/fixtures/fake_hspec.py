@@ -6,7 +6,8 @@ It reads `spec.json` from its working directory: {"examples": ["Group/Sub/exampl
 "stray": a line printed at column 0 after the first example of a run (as a child process's
 diagnostics would be), "omit": [examples a run executes but never reports],
 "dry_fail": a message --dry-run prints before exiting 1, "garble": true (write an unreadable
-failure report), "leak": true (leave a live child in
+failure report), "report_dir": true (the failure report path is a directory from the start, so
+reading it fails with an OSError), "leak": true (leave a live child in
 the process group), "stop": {"after": example, "how": "crash" | "hang" | "interrupt"} (stop
 once that example is reported; "interrupt" first sends SIGINT to $FIXTURE_INTERRUPT_PID)}.
 $FAKE_HSPEC_SPEC names another spec file, and $FAKE_HSPEC_RECORD a file that receives the
@@ -53,6 +54,8 @@ def main(argv):
             report = arg.split("=", 1)[1]
         index += 1
     trial = int(os.environ.get("QURUNTUL_TRIAL", "0"))
+    if report and not dry and spec.get("report_dir"):
+        os.makedirs(report, exist_ok=True)
     if trial in spec.get("crash_on", []):
         os.kill(os.getpid(), 9)
     chosen = [p for p in spec["examples"] if not patterns or any(pat in "/" + p + "/" for pat in patterns)]
@@ -90,7 +93,7 @@ def main(argv):
         for path in failed:
             print("  " + path)
     print(f"Finished in 0.0001 seconds\n{len(chosen)} examples, {len(failed)} failures")
-    if report:
+    if report and not spec.get("report_dir"):
         paths = ", ".join("([" + ",".join(haskell(g) for g in p.split("/")[:-1]) + "]," + haskell(p.split("/")[-1]) + ")"
                           for p in failed)
         Path(report).write_text("garbled" if spec.get("garble") else

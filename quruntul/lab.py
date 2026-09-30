@@ -680,11 +680,12 @@ class Lab:
             try:
                 result, failure_report, trial = self._run_trial(suite, prepared, run_id, owner, directory, 1, None,
                                                                 record=number)
-                outcomes = self._shake_outcomes(suite, result, tests, failure_report, trial)
             except (LabError, RuntimeError, OSError) as error:
                 result = dict(outcome="harness-error", error=f"{type(error).__name__}: {error}",
                               log=str(prefix) + ".log")
                 outcomes = {t: "incomplete" for t in tests}
+            else:
+                outcomes = self._read_outcomes(suite, result, tests, failure_report, trial)
             self._record_trial(run_id, number, suite, result, outcomes)
         except KeyboardInterrupt:
             interrupted = True
@@ -698,12 +699,9 @@ class Lab:
                 # Keep what the stopped trial left: its log, and any failure it had already reported.
                 result = _retained(prefix)
                 result["seed"] = (row or {}).get("document", {}).get("seed")
-                try:
-                    outcomes = self._shake_outcomes(
-                        suite, result, tests, Path(str(prefix) + ".failures") if suite.framework == "hspec" else None,
-                        dict(number=1, prefix=str(prefix), seed=result["seed"]))
-                except Exception:  # the evidence stays on disk; nothing more is readable
-                    outcomes = {t: "incomplete" for t in tests}
+                outcomes = self._read_outcomes(
+                    suite, result, tests, Path(str(prefix) + ".failures") if suite.framework == "hspec" else None,
+                    dict(number=1, prefix=str(prefix), seed=result["seed"]))
                 self._record_trial(run_id, number, suite, result, outcomes)
         row = next(t for t in self.state.trials(run_id) if t["number"] == number)
         recorded = {r["test_id"]: r["outcome"] for r in self.state.results(run_id) if r["number"] == number}
@@ -722,28 +720,43 @@ class Lab:
         live = {r["id"] for r in self.state.tests(suite=suite.id) if r["status"] != "retired"}
         return dict(unrecorded=[t for t in tests if t not in live], unlisted=sorted(live - set(tests)))
 
+    def _read_outcomes(self, suite, result, tests, failure_report, trial) -> dict[str, str]:
+        """`_shake_outcomes`, with any failure to read kept as this suite's harness error.
+
+        The guardian's record of the process stays as it was, beside the error, and no test is given a
+        result: the problem stays with this suite and never stops the next.
+        """
+        try:
+            return self._shake_outcomes(suite, result, tests, failure_report, trial)
+        except Exception as error:  # an adapter's or a report's malformation is evidence, not a crash
+            _broken(result, f"reading the trial's results failed: {type(error).__name__}: {error}")
+            return {t: "incomplete" for t in tests}
+
     def _shake_outcomes(self, suite, result, tests, failure_report, trial) -> dict[str, str]:
         """Each listed test's own result in a shakedown trial, read against the current enumeration.
 
         Native results are kept: passed, failed, pending (Hspec) and unproven (probes). A test with no
         result is `missing` when the trial completed and `incomplete` when it did not. Unreadable or
         malformed protocol evidence makes a completed trial a harness error, keeping any failure that
-        can still be read on its own.
+        can still be read on its own: each channel (the log, the failure report) is read separately.
         """
         def broken(reason):
-            if result["outcome"] in ("passed", "failed"):
-                result["outcome"], result["error"] = "harness-error", reason
+            _broken(result, reason)
 
         by_path = {path: test_id for test_id, path in tests.items()}
         if suite.framework == "hspec":
             log = Path(result.get("log") or str(trial["prefix"]) + ".log")
-            found = hspec.parse_checks(log.read_text(errors="replace"), set(by_path)) if log.exists() else {}
+            try:
+                found = hspec.parse_checks(log.read_text(errors="replace"), set(by_path)) if log.exists() else {}
+            except OSError as error:
+                found = {}
+                broken(f"unreadable trial log ({type(error).__name__})")
             if failure_report and failure_report.exists():
                 try:
                     failed = hspec.parse_failure_report(failure_report.read_text(errors="replace"))
-                except (ValueError, IndexError):
-                    result["failure_report_error"] = "unreadable failure report"
-                    broken("unreadable failure report")
+                except Exception as error:  # unreadable (OSError) or malformed: Hspec's own file, untrusted
+                    result["failure_report_error"] = f"{type(error).__name__}: {error}"
+                    broken(f"unreadable failure report ({type(error).__name__})")
                 else:
                     found.update({p: "failed" for p in failed if p in by_path})
         elif suite.framework == "exit":
@@ -782,10 +795,11 @@ class Lab:
             broken("the checks are not a mapping")
             return {}
         readable = {c: v for c, v in checks.items() if c in declared and v in valid}
-        unknown = sorted(set(checks) - declared)
-        invalid = sorted(c for c in checks if c in declared and c not in readable)
+        # Keys may be of any type (a hook's malformation), so they are rendered before sorting.
+        unknown = sorted(repr(c) for c in checks if c not in declared)
+        invalid = sorted(repr(c) for c in checks if c in declared and c not in readable)
         if unknown or invalid:
-            broken(f"unknown checks {unknown}, unknown outcomes for {invalid}")
+            broken(f"unknown checks [{', '.join(unknown)}], unknown outcomes for [{', '.join(invalid)}]")
             return {c: v for c, v in readable.items() if v == "failed"}
         # As in a flake batch, a probe's exit status must agree with the checks it reported.
         if (not hooked and result["outcome"] in ("passed", "failed")
@@ -1072,6 +1086,17 @@ def _classify(entry: dict, document: dict, number: int, tests: dict, outcomes: d
             problems.append(dict(kind="unreported", tests=unreported, log=log))
     not_passed = {kind: [t for t in tests if outcomes.get(t) == kind] for kind in ("pending", "unproven")}
     entry["not_passed"] = {kind: found for kind, found in not_passed.items() if found}
+
+
+def _broken(result: dict, reason: str) -> None:
+    """Unreadable or malformed protocol evidence makes a completed trial a harness error.
+
+    The guardian's own outcome stays beside it; an incomplete trial keeps its outcome, and the first
+    reason found is the one recorded.
+    """
+    if result["outcome"] in ("passed", "failed"):
+        result["guardian_outcome"] = result["outcome"]
+        result["outcome"], result["error"] = "harness-error", reason
 
 
 def _headline(entry: dict) -> dict:

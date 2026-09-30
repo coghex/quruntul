@@ -149,9 +149,13 @@ target is a suite, never a test.
   never counted as passed. For `command` suites a check reported `missing`, or
   not reported at all, is unreported (or incomplete in an incomplete trial).
   Protocol evidence that cannot be read (a malformed probe report, an
-  undeclared check, an exit status that disagrees with the checks, an
-  unreadable Hspec failure report, a hook that read nothing) makes a completed
-  trial a harness error, and any failure still readable on its own is kept.
+  undeclared check of any type, an exit status that disagrees with the checks,
+  an Hspec failure report that cannot be read or parsed, a hook that read
+  nothing) makes a completed trial a harness error, with the guardian's own
+  outcome kept beside it. Each channel (the trial log, the failure report, the
+  probe's checks) is read on its own, so any failure still readable is kept,
+  after an interruption too. Such a problem belongs to its suite alone: the
+  shakedown records it and goes on to the next suite.
 - **Summary rule.** A suite's result is its first problem, or `clean` when it
   has none: it built, listed its tests, ran a trial that completed, and every
   listed test reported a result with none failed. Hspec `pending` and probe
