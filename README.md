@@ -25,7 +25,9 @@ The name is the mountain of trials; the `q` makes it tab-complete.
   by every lane and linked worktree, with a regenerated `ledger.md` beside it.
   Every enumerated test is a row: `new` → `stable` or `flaky` → `fixing` →
   `stable`. A stable test is never measured again unless the owner marks it
-  flaky after a real failure.
+  flaky after a real failure. A test that fails every trial is `failing`, not
+  flaky: it goes to `$assess-tests` and is re-queued when its suite's inputs
+  change.
 - **Claims, not a global lock** — agents in separate sessions run different
   suites in parallel; builds in one checkout serialize; only one window-opening
   suite runs at a time.

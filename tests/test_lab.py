@@ -123,7 +123,8 @@ class LabTests(unittest.TestCase):
         # The probe suite has never been enumerated, so it is next; the CI suite is not re-measured.
         second = self.cli("flake", code=0)
         self.assertEqual(second["suite"], "probe-a")
-        self.assertEqual(self.statuses()["probe-a::beta"], "flaky")
+        # beta fails every trial: a consistent failure, not flakiness.
+        self.assertEqual(self.statuses()["probe-a::beta"], "failing")
         third = self.cli("flake")
         self.assertEqual(third["outcome"], "no-candidate")
 
@@ -173,6 +174,30 @@ class LabTests(unittest.TestCase):
         self.assertEqual(result["summary"]["interpretation"], "observations")
         self.assertIn("1 selected tests of unit went unreported by a completed trial",
                       Path(result["report"]).read_text())
+
+    def test_a_test_failing_every_trial_is_failing_and_requeued_when_its_inputs_change(self):
+        self.spec(dict(examples=["A/one", "A/broken", "A/also-broken"],
+                       fail={"A/broken": [1, 2, 3], "A/also-broken": [1, 2, 3]}))
+        self.push("a consistently failing pair")
+        result = self.cli("flake", "--target", "unit")
+        statuses = self.statuses()
+        self.assertEqual((statuses["unit::A/broken"], statuses["unit::A/also-broken"], statuses["unit::A/one"]),
+                         ("failing", "failing", "stable"))
+        self.assertEqual(sorted(result["summary"]["newly_failing"]), ["unit::A/also-broken", "unit::A/broken"])
+        self.assertEqual(result["summary"]["newly_flaky"], [])
+        # One observation for the batch, sent to assessment rather than $deflake.
+        [observation] = self.cli("observations", "--status", "open")
+        self.assertEqual(observation["document"]["kind"], "uncertain")
+        self.assertIn("2 tests of unit failed every trial", observation["document"]["title"])
+        self.assertIn("$assess-tests", observation["document"]["suggested_follow_up"])
+        self.assertEqual(self.cli("deflake", "select", "--owner", "d1")["outcome"], "no-candidate")
+        # The harness or code is repaired: the suite's inputs change, so both are queued again.
+        self.spec(dict(examples=["A/one", "A/broken", "A/also-broken"]))
+        self.push("repair")
+        repaired = self.cli("flake", "--target", "unit")
+        self.assertEqual(sorted(repaired["summary"]["measured"]), ["unit::A/also-broken", "unit::A/broken"])
+        self.assertEqual((self.statuses()["unit::A/broken"], self.statuses()["unit::A/also-broken"]),
+                         ("stable", "stable"))
 
     def test_a_crash_is_never_counted_as_a_pass(self):
         self.spec(dict(examples=["A/one"], crash_on=[1, 2, 3]))
@@ -345,3 +370,4 @@ class HookTests(LabTests):
     test_a_large_suite_is_measured_in_slices = None
     test_an_always_pending_example_does_not_requeue_its_suite = None
     test_child_output_does_not_hide_examples_and_an_unreported_one_is_observed = None
+    test_a_test_failing_every_trial_is_failing_and_requeued_when_its_inputs_change = None

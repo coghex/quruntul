@@ -273,8 +273,9 @@ class Lab:
                     self.state.finish_trial(run_id, trial["number"], dict(outcome="interrupted"), {})
             counts = dict(Counter(t["state"] for t in self.state.trials(run_id)))
             newly_flaky = [t for t, m in measured.items() if m.get("became") == "flaky"]
+            newly_failing = [t for t, m in measured.items() if m.get("became") == "failing"]
             summary = dict(counts=counts, reason=detail, planned_trials=trials, selected=len(selected),
-                           measured=measured, newly_flaky=newly_flaky,
+                           measured=measured, newly_flaky=newly_flaky, newly_failing=newly_failing,
                            interpretation=("blocked" if state_name == "blocked" else
                                            "observations" if newly_flaky or any(m["failures"] or m.get("missing")
                                                                                 for m in measured.values()) else
@@ -438,7 +439,15 @@ class Lab:
             became = None
             if upstream:
                 planned = len(trials)
-                if failures and row["status"] in ("new", "stable", "fixing"):
+                whole = all(t["state"] in ("passed", "failed") for t in trials.values())
+                if (failures and failures == planned > 1 and whole
+                        and row["status"] in ("new", "stable", "fixing")):
+                    # Failed in every trial: a consistent failure, not
+                    # flakiness. In a young project the harness or the
+                    # environment is the first suspect, so it goes to
+                    # assessment rather than $deflake.
+                    became = "failing"
+                elif failures and row["status"] in ("new", "stable", "fixing"):
                     became = "flaky"
                 elif (not failures and row["status"] in ("new", "fixing") and passes == planned
                       and all(t["state"] in ("passed", "failed") for t in trials.values())):
@@ -460,8 +469,24 @@ class Lab:
         run = self.state.run(run_id)
         artifacts = self.directory / "runs" / run_id
         observations = []
+        failing = sorted(t for t, m in summary["measured"].items() if m["became"] == "failing")
+        if failing:
+            # One observation for the lot: tests that fail every trial of one
+            # batch usually share one cause.
+            logs = ", ".join(f"`runs/{run_id}/trial-{n:04}.log`"
+                             for n in summary["measured"][failing[0]]["failing_trials"][:5])
+            observations.append(dict(
+                title=f"{len(failing)} tests of {suite.id} failed every trial",
+                area=suite.area or suite.id, kind="uncertain",
+                tests=", ".join(failing[:5]) + (f" and {len(failing) - 5} more" if len(failing) > 5 else ""),
+                evidence=f"{logs}; run {run_id}",
+                expected="every trial passes",
+                observed=f"each failed all {summary['planned_trials']} trials; status now failing",
+                confidence="medium",
+                follow_up="$assess-tests: a consistent failure is not flakiness; check the harness and "
+                          "environment before the product"))
         for test_id, m in sorted(summary["measured"].items()):
-            if not m["failures"]:
+            if not m["failures"] or m["became"] == "failing":
                 continue
             logs = ", ".join(f"`runs/{run_id}/trial-{n:04}.log`" for n in m["failing_trials"][:5])
             observations.append(dict(
@@ -493,7 +518,7 @@ class Lab:
             f"- Suite: `{suite.id}` ({suite.kind}, {suite.framework}); selected because: {run['document']['reason']}",
             f"- Trials: {summary['counts']} of {summary['planned_trials']} planned; selected tests: {summary['selected']}",
             f"- Became stable: {sum(1 for m in summary['measured'].values() if m['became'] == 'stable')}; "
-            f"became flaky: {len(summary['newly_flaky'])}",
+            f"became flaky: {len(summary['newly_flaky'])}; became failing: {len(summary['newly_failing'])}",
             f"- Result: `runs/{run_id}/result.json`; raw logs beside it",
         ])
         status = summary["interpretation"] if summary["interpretation"] != "clean" or not observations else "observations"
@@ -629,17 +654,17 @@ class Lab:
             by_suite.setdefault(row["suite"], Counter())[row["status"]] += 1
         lines = ["# Quruntul ledger", "", f"Generated {utc()} from ledger.sqlite3. Do not edit.", "",
                  f"Tests: {dict(Counter(r['status'] for r in tests))}", "", "## Suites", "",
-                 "| Suite | new | stable | flaky | fixing | pending | retired | enumerated | last probe run |",
-                 "|---|---|---|---|---|---|---|---|---|"]
+                 "| Suite | new | stable | flaky | failing | fixing | pending | retired | enumerated | last probe run |",
+                 "|---|---|---|---|---|---|---|---|---|---|"]
         for suite in self.state.suites():
             c = by_suite.get(suite["id"], Counter())
-            lines.append(f"| {suite['id']} | {c['new']} | {c['stable']} | {c['flaky']} | {c['fixing']} | "
+            lines.append(f"| {suite['id']} | {c['new']} | {c['stable']} | {c['flaky']} | {c['failing']} | {c['fixing']} | "
                          f"{c['pending']} | {c['retired']} | {suite['enumerated'] or '—'} | "
                          f"{suite['last_test_run'] or '—'} |")
-        lines += ["", "## Flaky and fixing", "", "| Test | Status | Failures / trials | Last failure | PR |",
+        lines += ["", "## Flaky, failing and fixing", "", "| Test | Status | Failures / trials | Last failure | PR |",
                   "|---|---|---|---|---|"]
         for row in tests:
-            if row["status"] in ("flaky", "fixing"):
+            if row["status"] in ("flaky", "failing", "fixing"):
                 lines.append(f"| {row['id']} | {row['status']} | {row['failures']}/{row['trials']} | "
                              f"{row['last_failure'] or '—'} | {row['pr'] or '—'} |")
         lines += ["", "## Recent runs", "", "| Run | Lane | Suite | Started | State | Revision |",

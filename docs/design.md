@@ -54,6 +54,12 @@ Every test the adapters enumerate is a row in the ledger, identified as
   somewhere real (CI, production, a user report).
 - `flaky` — a flake batch, or the owner, recorded a failure. `$deflake` owns it
   from here.
+- `failing` — its batch completed and it failed in every trial. A consistent
+  failure is not flakiness: the harness or the environment is the first
+  suspect, then the product. Its batch raises one `uncertain` observation for
+  `$assess-tests`, and `$deflake` never selects it. Like `pending`, it becomes
+  `new` again when its suite's inputs change, so a harness or code repair
+  re-queues it without an owner mark.
 - `fixing` — a `$deflake` PR is open for it. When that PR merges, the next flake
   selection verifies it on the merged revision: a clean batch makes it stable,
   any failure makes it flaky again.
@@ -85,7 +91,8 @@ the test stays `new` and the run is `inconclusive`.
 
 Status changes only for a batch at the upstream head. There, a failure moves a
 `new`, `stable` or `fixing` test to `flaky` (an explicit re-measurement of a
-stable test that fails is a real failure), and a batch in which every trial
+stable test that fails is a real failure), or to `failing` when every trial
+completed and it failed in all of them (more than one), and a batch in which every trial
 completed and the test passed every time moves a `new` or `fixing` test to
 `stable`. A batch at any other revision (`--ref`) is **candidate evidence**: it
 is recorded, counted and reported, but it never changes status, because a

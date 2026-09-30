@@ -69,6 +69,11 @@ focused `$test`, `$flake <test>` or `$playtest` follow-up. A `flaky-test`
 observation from `$flake` is already tracked in the ledger; its disposition
 is usually `duplicate` of the ledger row, with `$deflake <test>` as the
 follow-up — do not file an issue for a flaky test unless the owner asks.
+An `uncertain` observation that tests failed every trial (status `failing`)
+is a consistent failure: check the harness and environment first (build
+products, generated files, working directory, environment, launch path), then
+the product. Its tests return to `new` by themselves once the suite's inputs
+change, so a harness repair needs no ledger mark.
 
 ## 3. Draft the assessment and stop
 
