@@ -69,13 +69,23 @@ def enumerate_argv(executable: str, extra: list[str] | None = None) -> list[str]
     return base_argv(executable) + ["--dry-run", *(extra or [])]
 
 
-def parse_checks(text: str) -> dict[str, str]:
+def parse_checks(text: str, known: set[str] | None = None) -> dict[str, str]:
     """Map each reported example path ('A/B/example') to passed/failed/pending.
 
     Group lines carry no mark and set the nesting stack. Lines after the
     formatter's summary (failure details, timing) are ignored. A carriage
     return means the formatter redrew the line; only its final state counts.
+
+    A trial's log also carries whatever the suite's own processes print, such
+    as a child process's diagnostics at column 0, and such a line would
+    otherwise read as a new top-level group and misname every example after
+    it. Given the suite's `known` example paths, a line counts only when it
+    extends one of them: any other line is ignored and leaves the nesting
+    alone.
     """
+    prefixes = None
+    if known is not None:
+        prefixes = {path[:index] for path in known for index, char in enumerate(path) if char == "/"}
     results: dict[str, str] = {}
     stack: list[tuple[int, str]] = []
     for raw in text.splitlines():
@@ -86,13 +96,16 @@ def parse_checks(text: str) -> dict[str, str]:
             break
         indent = len(line) - len(line.lstrip(" "))
         match = _ITEM.match(line)
-        while stack and stack[-1][0] >= indent:
-            stack.pop()
+        nesting = [entry for entry in stack if entry[0] < indent]
+        name = match.group("text").strip() if match else line.strip()
+        path = "/".join([n for _, n in nesting] + [name])
+        if prefixes is not None and path not in (known if match else prefixes):
+            continue
+        stack = nesting
         if match:
-            path = "/".join([name for _, name in stack] + [match.group("text").strip()])
             results[path] = _MARKS[match.group("mark")]
         else:
-            stack.append((indent, line.strip()))
+            stack.append((indent, name))
     return results
 
 

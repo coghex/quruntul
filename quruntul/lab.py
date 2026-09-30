@@ -276,7 +276,8 @@ class Lab:
             summary = dict(counts=counts, reason=detail, planned_trials=trials, selected=len(selected),
                            measured=measured, newly_flaky=newly_flaky,
                            interpretation=("blocked" if state_name == "blocked" else
-                                           "observations" if newly_flaky or any(m["failures"] for m in measured.values()) else
+                                           "observations" if newly_flaky or any(m["failures"] or m.get("missing")
+                                                                                for m in measured.values()) else
                                            "clean" if state_name == "complete" else "inconclusive"))
             if state_name != "nothing-new":
                 self.state.finish(run_id, state_name, summary)
@@ -354,7 +355,8 @@ class Lab:
         by_path = {self.state.test(t)["path"]: t for t in selected}
         outcomes = {}
         if suite.framework == "hspec":
-            reported = hspec.parse_checks(Path(result["log"]).read_text(errors="replace"))
+            known = {t["path"] for t in self.state.tests(suite=suite.id)}
+            reported = hspec.parse_checks(Path(result["log"]).read_text(errors="replace"), known)
             failed = set()
             if failure_report and failure_report.exists():
                 try:
@@ -429,6 +431,7 @@ class Lab:
             passes = sum(1 for r in mine if r["outcome"] == "passed")
             failures = sum(1 for r in mine if r["outcome"] == "failed")
             complete = sum(1 for r in mine if r["outcome"] in ("passed", "failed", "pending"))
+            missing = sum(1 for r in mine if r["outcome"] == "missing")
             outcome = "failed" if failures else ("passed" if complete and passes == complete else "incomplete")
             self.state.record_measurement(test_id, run_id, revision, complete, failures, outcome)
             row = self.state.test(test_id)
@@ -449,6 +452,7 @@ class Lab:
                     self.state.set_status(test_id, became, f"flake batch {run_id}: {failures} failed of {complete}",
                                           dict(run=run_id, revision=revision))
             measured[test_id] = dict(passes=passes, failures=failures, complete=complete, became=became,
+                                     missing=missing,
                                      failing_trials=[r["number"] for r in mine if r["outcome"] == "failed"])
         return measured
 
@@ -468,6 +472,18 @@ class Lab:
                 observed=f"{m['failures']} failures in {m['complete']} complete trials" +
                          (f"; status now {m['became']}" if m["became"] else ""),
                 confidence="high", follow_up="$deflake " + test_id))
+        unreported = sorted(t for t, m in summary["measured"].items() if m.get("missing"))
+        if unreported:
+            # A trial that ran to completion yet named no result for a selected
+            # test: the log could not be read for it, so it stays unmeasured.
+            observations.append(dict(
+                title=f"{len(unreported)} selected tests of {suite.id} went unreported by a completed trial",
+                area=suite.area or suite.id, kind="harness", tests=", ".join(unreported[:5]) +
+                (f" and {len(unreported) - 5} more" if len(unreported) > 5 else ""),
+                evidence=f"`runs/{run_id}/trial-*.log`; outcome `missing` in the run's results",
+                expected="every completed trial reports every selected test",
+                observed=f"{len(unreported)} tests reported in no completed trial; those left unmeasured",
+                confidence="high", follow_up="inspect the trial log's Hspec output against the enumeration"))
         if summary["interpretation"] == "blocked":
             observations.append(dict(
                 title=f"flake batch of {suite.id} blocked", area=suite.area or suite.id, kind="harness",

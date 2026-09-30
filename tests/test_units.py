@@ -55,6 +55,15 @@ class HspecTests(unittest.TestCase):
     def test_carriage_return_keeps_only_the_final_state(self):
         self.assertEqual(hspec.parse_checks("G\n  item [ ]\r  item [✔]\n"), {"G/item": "passed"})
 
+    def test_output_that_fits_no_known_path_is_ignored(self):
+        text = ("G\n  sub\n    one [✔]\nchild: all spec items have been filtered\n    two [✔]\n"
+                "  other\n    stray child line\n    three [‐]\n")
+        known = {"G/sub/one", "G/sub/two", "G/other/three"}
+        self.assertEqual(hspec.parse_checks(text, known),
+                         {"G/sub/one": "passed", "G/sub/two": "passed", "G/other/three": "pending"})
+        # Without the known paths the stray line reads as a group and misnames what follows.
+        self.assertNotIn("G/sub/two", hspec.parse_checks(text))
+
     def test_failure_report_decodes_haskell_strings(self):
         text = ('FailureReport {failureReportSeed = 1, failureReportPaths = '
                 '[(["A","B \\"q\\""],"ex/1 \\1234\\&5"),([],"top"),(["G"],"tab\\there")]}')
