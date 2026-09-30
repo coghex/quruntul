@@ -162,6 +162,18 @@ class LabTests(unittest.TestCase):
         self.cli("flake", "--target", "unit")
         self.assertEqual(self.statuses()["unit::A/gated"], "stable")
 
+    def test_child_output_does_not_hide_examples_and_an_unreported_one_is_observed(self):
+        self.spec(dict(examples=["A/one", "A/two", "B/three", "B/four"], omit=["B/four"],
+                       stray="child: all spec items have been filtered"))
+        self.push("noisy children")
+        result = self.cli("flake", "--target", "unit")
+        statuses = self.statuses()
+        self.assertEqual([statuses["unit::" + p] for p in ("A/one", "A/two", "B/three")], ["stable"] * 3)
+        self.assertEqual(statuses["unit::B/four"], "new")
+        self.assertEqual(result["summary"]["interpretation"], "observations")
+        self.assertIn("1 selected tests of unit went unreported by a completed trial",
+                      Path(result["report"]).read_text())
+
     def test_a_crash_is_never_counted_as_a_pass(self):
         self.spec(dict(examples=["A/one"], crash_on=[1, 2, 3]))
         self.push("crashy")
@@ -332,3 +344,4 @@ class HookTests(LabTests):
     test_dirty_checkout_blocks_rather_than_resetting = None
     test_a_large_suite_is_measured_in_slices = None
     test_an_always_pending_example_does_not_requeue_its_suite = None
+    test_child_output_does_not_hide_examples_and_an_unreported_one_is_observed = None

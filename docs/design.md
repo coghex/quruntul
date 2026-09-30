@@ -166,7 +166,12 @@ selectors (its `--skip` selectors still apply), which profile suites need. It de
 
 For Hspec suites the engine does the rest: enumeration (`--dry-run
 --format=checks`), exact per-test selection (`--match /path/`), per-trial
-results (`--format=checks` plus `--failure-report`), and parsing. Command
+results (`--format=checks` plus `--failure-report`), and parsing. A trial's
+output is read against the suite's enumerated paths, so a line the suite's own
+processes print (a child's diagnostics at column 0, say) is ignored rather than
+read as a group that misnames later examples. A selected test that a completed
+trial never reports is `missing`: it stays unmeasured, and the batch report
+raises a harness observation instead of calling the batch clean. Command
 probes write `quruntul-probe/v1` JSON to `$QURUNTUL_PROBE_RESULT` naming their
 declared checks.
 

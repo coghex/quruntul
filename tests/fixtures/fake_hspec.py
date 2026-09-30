@@ -2,7 +2,9 @@
 """A stand-in for an Hspec test executable, faithful to the CLI surface quruntul uses.
 
 It reads `spec.json` from its working directory: {"examples": ["Group/Sub/example", ...],
-"fail": {"Group/Sub/example": [trial numbers that fail]}, "crash_on": [trial numbers]}.
+"fail": {"Group/Sub/example": [trial numbers that fail]}, "crash_on": [trial numbers],
+"stray": a line printed at column 0 after the first example of a run (as a child process's
+diagnostics would be), "omit": [examples a run executes but never reports]}.
 QURUNTUL_TRIAL names the trial. It honours --dry-run, --match, --format=checks,
 --failure-report, --fail-on=empty and prints the checks formatter's layout.
 """
@@ -50,8 +52,12 @@ def main(argv):
         for depth in range(shared, len(groups)):
             print("  " * depth + groups[depth])
         mark = "✘" if path in failed else "‐" if path in pending else "✔"
+        if not dry and path in spec.get("omit", []):
+            continue
         print("  " * len(groups) + parts[-1] + f" [{mark}]")
         previous = groups
+        if not dry and spec.get("stray") and path == chosen[0]:
+            print(spec["stray"])
     print()
     if failed:
         print("Failures:")
