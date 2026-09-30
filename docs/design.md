@@ -32,6 +32,7 @@ what a result looks like. The code in `quruntul/` implements it; the skills in
 | Lane | Skill | Selects | Runs | Changes test status |
 |---|---|---|---|---|
 | flake | `$flake` | tests that have never been measured | a batch of K trials of just those tests | new → stable or flaky |
+| shakedown | `quruntul shakedown` (recommended by `$flake`) | every suite that applies on this platform, or one | one trial of each whole suite | none; writes nothing about tests or suites |
 | deflake | `$deflake` | one flaky test | diagnosis, a fix, before/after batches, a PR | flaky → fixing; fixing → stable/flaky on verification |
 | test | `$test` | one probe (local-only, never CI) | one long observational execution | none |
 | playtest | `$playtest` | one player question | one bounded agent-driven session | none |
@@ -104,6 +105,86 @@ neither. A batch at any other revision (`--ref`) is **candidate evidence**: it
 is recorded, counted and reported, but it never changes status, because a
 candidate's failure may be the candidate's own. `$deflake` proves fixes with
 exactly such batches.
+
+## Shakedowns
+
+A shakedown proves cheaply that an adapter launches every suite the way CI
+does, before flake batches rely on that launch. `quruntul shakedown` runs one
+trial of every suite that applies on this platform, or of one suite with
+`--target SUITE`, always at the upstream head: it takes no `--ref`, and its
+target is a suite, never a test.
+
+- **Launch.** Each suite's trial goes through the same preparation, build,
+  enumeration and launch as a flake batch of that whole suite: the same argv,
+  working directory, environment, wrapper and adapter hooks. It runs every
+  listed test, with no per-test selectors and no `batch_tests` slicing. The
+  current enumeration names the tests, whatever the ledger holds. Hooks and the
+  process see the suite's first trial (`QURUNTUL_TRIAL=1`), while the run
+  numbers its trial rows one per suite; each trial row names its suite, and
+  each suite's evidence is in `runs/<run-id>/<suite>/`.
+- **Claims.** Each suite takes its `suite:<id>` claim, and a desktop suite
+  also the `desktop` claim, so one window-opening suite runs at a time. Desktop
+  suites are included, with the consent the adapter's preparation supplies. A
+  suite whose claim another owner holds is reported `busy` and not run. Claims
+  are released after each suite, whatever its result.
+- **Skipped.** A suite that does not apply on this platform, or that is
+  deferred, is listed as `skipped` with its reason, even when targeted.
+  `--target` naming a deferred suite is refused with the deferral's reason, as
+  `$flake` and `$test` refuse one.
+- **Problems.** Each suite records every problem present, never only the first,
+  each with its affected tests and evidence paths, always in this order:
+  - `build-failed`: preparation or build failed; the adapter's error and the
+    build logs.
+  - `enumeration-failed`: listing the tests failed; the reason and the log.
+  - `incomplete`: the trial did not complete (it crashed, timed out, was
+    interrupted, or ended in a harness or setup error). It keeps the process
+    outcome, its detail and its log, and lists every test without a result.
+  - `failed`: every test that reported failure, including those reported
+    before an incomplete trial stopped.
+  - `unreported`: in a completed trial, every listed test that reported no
+    result.
+
+  A trial completed when its process passed or failed; any other outcome makes
+  it incomplete, whatever successes it reported. A test without a result is
+  never counted as passed. For `command` suites a check reported `missing`, or
+  not reported at all, is unreported (or incomplete in an incomplete trial).
+  Protocol evidence that cannot be read (a malformed probe report, an
+  undeclared check of any type, an exit status that disagrees with the checks,
+  an Hspec failure report that cannot be read or parsed, a hook that read
+  nothing) makes a completed trial a harness error, with the guardian's own
+  outcome kept beside it. Each channel (the trial log, the failure report, the
+  probe's checks) is read on its own, so any failure still readable is kept,
+  after an interruption too. Such a problem belongs to its suite alone: the
+  shakedown records it and goes on to the next suite.
+- **Summary rule.** A suite's result is its first problem, or `clean` when it
+  has none: it built, listed its tests, ran a trial that completed, and every
+  listed test reported a result with none failed. Hspec `pending` and probe
+  `unproven` results are reported results, not failures, so they leave a suite
+  clean; the report lists them as not passed. A suite not run is `skipped`,
+  `busy` or, after an interruption, `not-run`.
+- **Independence and interruption.** A suite's problem never stops the next
+  suite. An interruption stops the shakedown: the running suite is `incomplete`
+  with `interrupted` as its process outcome, keeping whatever its trial had
+  already reported, the suites not reached are `not-run`, and everything
+  recorded is kept. Recovery never replays a trial.
+- **Report and observations.** The run is lane `shakedown`, with a
+  `quruntul-result/v1` report giving each suite's result, all of its problems
+  and the tests for each. Each suite with a problem is one `harness`
+  observation covering all of its problems, naming the harness and
+  environment as the first suspect and recommending `$assess-tests`, which
+  claims and assesses it like any other. Skipped, busy and not-run suites raise
+  no observation. The report is `clean` when every suite that applies ran
+  clean, `observations` when any suite has a problem, and `inconclusive`
+  otherwise.
+- **Ledger rule.** A shakedown writes nothing about tests or suites: no test is
+  added, retired, re-queued or changed in status, and no suite's declaration,
+  identity, enumeration or `$test` freshness changes, even for an undeclared
+  suite or an empty ledger. Where its enumeration differs from the ledger
+  (tests the ledger lacks, and ledger tests no longer listed), the report says
+  so and nothing is recorded. It writes only its own run, trials, results,
+  report and observations, and its claims.
+- **Advisory.** Flake and `$test` selection never read a shakedown's result. Run
+  one after an adapter or harness change and before seeding a repository.
 
 ## Claims
 
@@ -207,7 +288,8 @@ and one `### OBS-nnn — title` section per independent observation, each with
 the fields in `quruntul/templates/report.md`. `quruntul report attach RUN`
 validates it and ingests each observation into the ledger, where
 `$assess-tests` claims and assesses them. Flake batches write their report
-automatically: every newly flaky test becomes one observation.
+automatically: every newly flaky test becomes one observation. Shakedowns do
+too: every suite with a problem becomes one observation.
 
 ## Legacy repositories
 

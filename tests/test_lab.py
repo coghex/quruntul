@@ -68,7 +68,9 @@ def git(cwd, *args):
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
 
 
-class LabTests(unittest.TestCase):
+class LabFixture(unittest.TestCase):
+    """A fixture repository with an upstream remote; no tests of its own."""
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="quruntul-lab-")
         base = Path(self.temp.name)
@@ -110,6 +112,8 @@ class LabTests(unittest.TestCase):
     def statuses(self):
         return {t["id"]: t["status"] for t in self.cli("tests")}
 
+
+class LabTests(LabFixture):
     def test_flake_measures_each_test_once_then_only_new_ones(self):
         first = self.cli("flake")
         self.assertEqual((first["outcome"], first["suite"]), ("complete", "unit"))
