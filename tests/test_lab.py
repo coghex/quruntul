@@ -191,6 +191,15 @@ class LabTests(unittest.TestCase):
         self.assertIn("2 tests of unit failed every trial", observation["document"]["title"])
         self.assertIn("$assess-tests", observation["document"]["suggested_follow_up"])
         self.assertEqual(self.cli("deflake", "select", "--owner", "d1")["outcome"], "no-candidate")
+        # Measured again explicitly, a test already failing that fails every trial
+        # again keeps its status and still goes to assessment, never to $deflake.
+        again = self.cli("flake", "--target", "unit::A/broken")
+        self.assertEqual(self.statuses()["unit::A/broken"], "failing")
+        [repeat] = self.cli("observations", "--status", "open", "--run", again["run_id"])
+        self.assertEqual(repeat["document"]["kind"], "uncertain")
+        self.assertIn("1 tests of unit failed every trial", repeat["document"]["title"])
+        self.assertIn("failing 1", repeat["document"]["observed"])
+        self.assertNotIn("Suggested follow-up: $deflake", Path(again["report"]).read_text())
         # The harness or code is repaired: the suite's inputs change, so both are queued again.
         self.spec(dict(examples=["A/one", "A/broken", "A/also-broken"]))
         self.push("repair")

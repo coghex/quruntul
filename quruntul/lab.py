@@ -437,15 +437,16 @@ class Lab:
             self.state.record_measurement(test_id, run_id, revision, complete, failures, outcome)
             row = self.state.test(test_id)
             became = None
+            planned = len(trials)
+            whole = all(t["state"] in ("passed", "failed") for t in trials.values())
+            # Failed in every trial: a consistent failure, not flakiness. In a
+            # young project the harness or the environment is the first
+            # suspect, so it goes to assessment rather than $deflake. This is
+            # the batch's evidence, whatever the test's status and whether
+            # the status changes (a failing test measured again, a candidate).
+            consistent = bool(failures and failures == planned > 1 and whole)
             if upstream:
-                planned = len(trials)
-                whole = all(t["state"] in ("passed", "failed") for t in trials.values())
-                if (failures and failures == planned > 1 and whole
-                        and row["status"] in ("new", "stable", "fixing")):
-                    # Failed in every trial: a consistent failure, not
-                    # flakiness. In a young project the harness or the
-                    # environment is the first suspect, so it goes to
-                    # assessment rather than $deflake.
+                if consistent and row["status"] in ("new", "stable", "fixing"):
                     became = "failing"
                 elif failures and row["status"] in ("new", "stable", "fixing"):
                     became = "flaky"
@@ -461,7 +462,7 @@ class Lab:
                     self.state.set_status(test_id, became, f"flake batch {run_id}: {failures} failed of {complete}",
                                           dict(run=run_id, revision=revision))
             measured[test_id] = dict(passes=passes, failures=failures, complete=complete, became=became,
-                                     missing=missing,
+                                     missing=missing, consistent=consistent,
                                      failing_trials=[r["number"] for r in mine if r["outcome"] == "failed"])
         return measured
 
@@ -469,7 +470,7 @@ class Lab:
         run = self.state.run(run_id)
         artifacts = self.directory / "runs" / run_id
         observations = []
-        failing = sorted(t for t, m in summary["measured"].items() if m["became"] == "failing")
+        failing = sorted(t for t, m in summary["measured"].items() if m.get("consistent"))
         if failing:
             # One observation for the lot: tests that fail every trial of one
             # batch usually share one cause.
@@ -481,12 +482,14 @@ class Lab:
                 tests=", ".join(failing[:5]) + (f" and {len(failing) - 5} more" if len(failing) > 5 else ""),
                 evidence=f"{logs}; run {run_id}",
                 expected="every trial passes",
-                observed=f"each failed all {summary['planned_trials']} trials; status now failing",
+                observed=f"each failed all {summary['planned_trials']} trials; statuses now: " + ", ".join(
+                    f"{status} {count}" for status, count in sorted(Counter(
+                        self.state.test(t)["status"] for t in failing).items())),
                 confidence="medium",
                 follow_up="$assess-tests: a consistent failure is not flakiness; check the harness and "
                           "environment before the product"))
         for test_id, m in sorted(summary["measured"].items()):
-            if not m["failures"] or m["became"] == "failing":
+            if not m["failures"] or m.get("consistent"):
                 continue
             logs = ", ".join(f"`runs/{run_id}/trial-{n:04}.log`" for n in m["failing_trials"][:5])
             observations.append(dict(

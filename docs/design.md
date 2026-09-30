@@ -57,7 +57,9 @@ Every test the adapters enumerate is a row in the ledger, identified as
 - `failing` — its batch completed and it failed in every trial. A consistent
   failure is not flakiness: the harness or the environment is the first
   suspect, then the product. Its batch raises one `uncertain` observation for
-  `$assess-tests`, and `$deflake` never selects it. Like `pending`, it becomes
+  `$assess-tests`, as does any batch in which tests failed every trial,
+  whatever their status (a failing test measured again, a candidate batch);
+  `$deflake` never selects it. Like `pending`, it becomes
   `new` again when its suite's inputs change, so a harness or code repair
   re-queues it without an owner mark.
 - `fixing` — a `$deflake` PR is open for it. When that PR merges, the next flake
