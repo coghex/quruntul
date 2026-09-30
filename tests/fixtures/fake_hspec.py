@@ -20,6 +20,9 @@ def haskell(text):
 
 def main(argv):
     spec = json.loads(Path("spec.json").read_text())
+    if Path("override.json").exists():
+        # Outside the fixture suite's identity: changes behaviour without re-queueing tests.
+        spec.update(json.loads(Path("override.json").read_text()))
     dry = "--dry-run" in argv
     patterns, report = [], None
     index = 0

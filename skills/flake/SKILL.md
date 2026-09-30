@@ -13,6 +13,10 @@ is a row in quruntul's ledger with a status:
   default**, however old the measurement is. Only the owner moves it back, after
   it fails somewhere real.
 - `flaky`: a batch or the owner recorded a failure. `$deflake` takes it from here.
+- `failing`: it failed in every trial of a complete batch. That is a consistent
+  failure, not flakiness: suspect the harness or environment first, then the
+  product. It goes to `$assess-tests`, never `$deflake`, and returns to `new`
+  by itself when its suite's inputs (code or adapter) change.
 - `fixing`: a `$deflake` PR is open. After it merges, the next `$flake` verifies
   the test on the merged revision.
 - `retired`: no longer present upstream.
@@ -59,8 +63,8 @@ meant. Do not guess.
    selected tests K times with fresh seeds, and records every result.
 3. Read its JSON. The main outcomes are:
    - **`complete`:** the batch ran. Read `summary.measured`: which tests
-     became `stable`, which became `flaky` (`newly_flaky`), and their
-     failure counts.
+     became `stable`, which became `flaky` (`newly_flaky`), which became
+     `failing` (`newly_failing`), and their failure counts.
    - **`no-candidate`:** every test has been measured. This is the lab
      working as designed, not a gap. Report `skipped` reasons and the status
      counts.
@@ -116,8 +120,8 @@ one line that windows will appear. Don't wait for a reply.
 ## Report
 
 For each iteration give the suite, the exact revision, trials run, the tests
-that became stable or flaky, the report and ledger paths, and any limitation.
-Recommend `$deflake <test>` for new flaky tests and `$assess-tests` for
-observations. Invoke neither.
+that became stable, flaky or failing, the report and ledger paths, and any
+limitation. Recommend `$deflake <test>` for new flaky tests and `$assess-tests`
+for observations, including every batch with failing tests. Invoke neither.
 
 This skill measures only. It never edits code, files issues or opens PRs.
