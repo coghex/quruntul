@@ -1,0 +1,164 @@
+# Publishes the `review-approved` check the PR drainer requires, and removes a
+# stale `reviewed:approve` when a push changes this pull request's own files.
+# Copied from coghex/moskophoros at 5926367, whose copy is coghex/kanban's
+# .github/workflows/review-gate.yml at commit d6d1653 with two local fixes to
+# the stale-approval step, which upstream still lacks:
+#   - approval survives a push only if the push touches none of the files the
+#     pull request changed before OR after it, so reverting a reviewed file
+#     cannot pass as a base-branch update;
+#   - every file list comes from `git diff` with the same options, instead of
+#     comparing git's escaped names with `gh pr diff`'s literal ones.
+# tools/test_review_gate.py runs this step. Otherwise keep it in step with
+# upstream rather than editing it here.
+name: Review gate
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  review-approved:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require a current reviewed:approve label
+        env:
+          HAS_CURRENT_APPROVAL: ${{ contains(github.event.pull_request.labels.*.name, 'reviewed:approve') }}
+        run: |
+          if [ "$HAS_CURRENT_APPROVAL" = "true" ]; then
+            echo "the pull request currently has reviewed:approve"
+          else
+            echo "a current reviewed:approve verdict is required"
+            exit 1
+          fi
+
+  # New commits that touch this pull request's own files invalidate a prior
+  # approval: strip the label so the gate closes until a reviewer approves the
+  # updated code. The removal fires an `unlabeled` event, which re-runs
+  # review-approved. A synchronize push that touches none of this pull
+  # request's own files -- a base-branch update merged forward with no
+  # overlapping content -- leaves the label alone: the reviewed code has not
+  # changed, only the branch's ancestry has.
+  #
+  # Keeping the label is the ONLY positive content-safe signal this repository
+  # publishes, and the drainer reads it as one (`tools/drain_prs.py`,
+  # branch_update_carried_approval). So this job runs on every synchronize
+  # rather than only on an already-approved payload: a run skipped for a later
+  # push would leave an earlier run's success as the latest non-skipped
+  # result, and that stale success would speak for a head it never saw.
+  dismiss-stale-approval:
+    if: github.event.action == 'synchronize'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Check out the pushed branch with full history
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Remove approval unless this push touches no PR-owned file
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          strip() {
+            # A suppressed removal failure would be the whole bug back again:
+            # this job succeeding with reviewed:approve still attached is
+            # precisely what the drainer reads as "this push was content-safe".
+            # So the removal is confirmed rather than assumed, and a strip that
+            # did not happen fails the job instead of reporting a decision the
+            # label does not reflect. The attempt itself is allowed to fail --
+            # the job runs on unapproved synchronizes too, where there is no
+            # label to remove -- because only the state afterwards decides.
+            gh pr edit "$PR_NUMBER" --repo "$REPO" --remove-label reviewed:approve || true
+            if ! remaining=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels --jq '.labels[].name'); then
+              echo "couldn't read this PR's labels back -- the removal is unconfirmed, failing"
+              exit 1
+            fi
+            if printf '%s\n' "$remaining" | grep -qx 'reviewed:approve'; then
+              echo "reviewed:approve is still attached after the removal attempt -- failing"
+              exit 1
+            fi
+            echo "reviewed:approve is not attached"
+          }
+          # Every case that cannot positively prove non-overlap strips. This
+          # only ever SKIPS a strip when the push is provably content-free for
+          # this pull request, never the reverse.
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "no usable 'before' SHA -- can't confirm this is a no-op update, stripping"
+            strip
+            exit 0
+          fi
+          if ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            echo "'before' SHA not reachable in this checkout -- can't confirm, stripping"
+            strip
+            exit 0
+          fi
+          if [ -z "$AFTER" ] || [ "$AFTER" = "0000000000000000000000000000000000000000" ]; then
+            echo "no usable 'after' SHA -- can't confirm this is a no-op update, stripping"
+            strip
+            exit 0
+          fi
+          if ! git cat-file -e "$AFTER^{commit}" 2>/dev/null; then
+            echo "'after' SHA not reachable in this checkout -- can't confirm, stripping"
+            strip
+            exit 0
+          fi
+          if ! drifted_files=$(git diff --no-renames --name-only "$BEFORE" "$AFTER"); then
+            echo "couldn't diff 'before'..'after' -- can't confirm, stripping"
+            strip
+            exit 0
+          fi
+          if [ -z "$drifted_files" ]; then
+            echo "push introduced no file changes -- stripping (unexpected, be safe)"
+            strip
+            exit 0
+          fi
+          # Every file list below comes from the same `git diff` options, so a
+          # path is spelled identically in each: git escapes unusual names
+          # (non-ASCII, quotes, control characters), and mixing its lists with
+          # `gh pr diff`, which prints names literally, lets such a file slip
+          # past the comparison. The pull request's file lists are three-dot
+          # diffs from the base branch, the same comparison GitHub shows.
+          if ! git rev-parse --verify --quiet "origin/$BASE_REF^{commit}" > /dev/null; then
+            echo "base branch origin/$BASE_REF not in this checkout -- can't confirm, stripping"
+            strip
+            exit 0
+          fi
+          if ! pr_files=$(git diff --no-renames --name-only "origin/$BASE_REF...$AFTER"); then
+            echo "couldn't list this PR's own files -- can't confirm, stripping"
+            strip
+            exit 0
+          fi
+          if [ -z "$pr_files" ]; then
+            echo "this PR reports no files of its own -- nothing to prove non-overlap against, stripping"
+            strip
+            exit 0
+          fi
+          # The files the pull request changed BEFORE this push, i.e. the ones
+          # the approval covered. A push that reverts a reviewed file drops it
+          # from the current list, so that list alone would misread the revert
+          # as a base-branch update.
+          if ! approved_files=$(git diff --no-renames --name-only "origin/$BASE_REF...$BEFORE"); then
+            echo "couldn't list this PR's files before the push -- can't confirm, stripping"
+            strip
+            exit 0
+          fi
+          owned_files=$(printf '%s\n%s\n' "$pr_files" "$approved_files" | sed '/^$/d' | sort -u)
+          overlap=$(comm -12 <(printf '%s\n' "$owned_files") <(printf '%s\n' "$drifted_files" | sort -u))
+          if [ -n "$overlap" ]; then
+            echo "push touched PR-owned file(s): $overlap -- stripping"
+            strip
+          else
+            echo "push touched no PR-owned files (branch-update merge) -- keeping reviewed:approve"
+          fi
