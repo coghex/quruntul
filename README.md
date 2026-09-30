@@ -60,6 +60,8 @@ replaces — and the retired `autotest` — into a dated
 quruntul status                         # summary; writes ledger.md
 quruntul flake                          # one batch of the next suite with new tests
 quruntul flake --target SUITE_OR_TEST   # measure that
+quruntul shakedown                      # one trial of every suite that applies here; changes no status
+quruntul shakedown --target SUITE       # just that suite
 quruntul tests --status flaky
 quruntul mark TEST --status flaky --reason "failed in CI" --evidence URL
 quruntul test                           # one due probe
@@ -75,6 +77,11 @@ with `name`, `suites(ctx)` and `prepare(ctx, suite)`; see
 `tests/test_lab.py`. Hspec suites need nothing else: the engine enumerates
 examples, selects them exactly, and reads per-example results. Command probes
 report `quruntul-probe/v1` JSON to `$QURUNTUL_PROBE_RESULT`.
+
+Before seeding a repository, and after changing its adapter, run
+`quruntul shakedown`: one trial of every suite, launched as a flake batch would
+launch it, reporting any suite that fails to build, list its tests, complete
+its trial or report every test, without touching the ledger.
 
 Skills choose by what the checkout contains: with `.quruntul/adapter.py` they use
 quruntul, otherwise Synarchy falls back to its preserved legacy workflow in

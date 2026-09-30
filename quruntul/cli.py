@@ -69,6 +69,10 @@ def parser() -> argparse.ArgumentParser:
     f.add_argument("--trials", type=int)
     f.add_argument("--owner")
 
+    sd = sub.add_parser("shakedown", help="one trial of every applicable suite at the upstream head; advisory")
+    sd.add_argument("--target", help="one suite id; default: every suite that applies on this platform")
+    sd.add_argument("--owner")
+
     tt = sub.add_parser("test", help="one probe execution")
     tt.add_argument("--target")
     tt.add_argument("--hint")
@@ -164,6 +168,13 @@ def run(args, lab: Lab):
         owner = args.owner or new_owner("flake")
         try:
             return lab.flake(owner, args.target, args.ref, args.trials)
+        finally:
+            if not args.owner:
+                s.release(owner)
+    if op == "shakedown":
+        owner = args.owner or new_owner("shakedown")
+        try:
+            return lab.shakedown(owner, args.target)
         finally:
             if not args.owner:
                 s.release(owner)

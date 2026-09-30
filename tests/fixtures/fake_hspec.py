@@ -4,13 +4,22 @@
 It reads `spec.json` from its working directory: {"examples": ["Group/Sub/example", ...],
 "fail": {"Group/Sub/example": [trial numbers that fail]}, "crash_on": [trial numbers],
 "stray": a line printed at column 0 after the first example of a run (as a child process's
-diagnostics would be), "omit": [examples a run executes but never reports]}.
-QURUNTUL_TRIAL names the trial. It honours --dry-run, --match, --format=checks,
---failure-report, --fail-on=empty and prints the checks formatter's layout.
+diagnostics would be), "omit": [examples a run executes but never reports],
+"dry_fail": a message --dry-run prints before exiting 1, "garble": true (write an unreadable
+failure report), "leak": true (leave a live child in
+the process group), "stop": {"after": example, "how": "crash" | "hang" | "interrupt"} (stop
+once that example is reported; "interrupt" first sends SIGINT to $FIXTURE_INTERRUPT_PID)}.
+$FAKE_HSPEC_SPEC names another spec file, and $FAKE_HSPEC_RECORD a file that receives the
+argv and the FIXTURE_* environment. QURUNTUL_TRIAL names the trial. It honours --dry-run,
+--match, --format=checks, --failure-report, --fail-on=empty and prints the checks
+formatter's layout.
 """
 import json
 import os
+import signal
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -19,11 +28,18 @@ def haskell(text):
 
 
 def main(argv):
-    spec = json.loads(Path("spec.json").read_text())
+    sys.stdout.reconfigure(line_buffering=True)
+    spec = json.loads(Path(os.environ.get("FAKE_HSPEC_SPEC", "spec.json")).read_text())
+    if os.environ.get("FAKE_HSPEC_RECORD"):
+        Path(os.environ["FAKE_HSPEC_RECORD"]).write_text(json.dumps(dict(
+            argv=argv, env={k: v for k, v in os.environ.items() if k.startswith("FIXTURE_")})))
     if Path("override.json").exists():
         # Outside the fixture suite's identity: changes behaviour without re-queueing tests.
         spec.update(json.loads(Path("override.json").read_text()))
     dry = "--dry-run" in argv
+    if dry and spec.get("dry_fail"):
+        print(spec["dry_fail"])
+        return 1
     patterns, report = [], None
     index = 0
     while index < len(argv):
@@ -61,6 +77,13 @@ def main(argv):
         previous = groups
         if not dry and spec.get("stray") and path == chosen[0]:
             print(spec["stray"])
+        stop = spec.get("stop") or {}
+        if not dry and stop.get("after") == path:
+            if stop["how"] == "crash":
+                os.kill(os.getpid(), 9)
+            if stop["how"] == "interrupt":
+                os.kill(int(os.environ["FIXTURE_INTERRUPT_PID"]), signal.SIGINT)
+            time.sleep(60)
     print()
     if failed:
         print("Failures:")
@@ -70,7 +93,10 @@ def main(argv):
     if report:
         paths = ", ".join("([" + ",".join(haskell(g) for g in p.split("/")[:-1]) + "]," + haskell(p.split("/")[-1]) + ")"
                           for p in failed)
-        Path(report).write_text(f"FailureReport {{failureReportSeed = 1, failureReportPaths = [{paths}]}}")
+        Path(report).write_text("garbled" if spec.get("garble") else
+                                f"FailureReport {{failureReportSeed = 1, failureReportPaths = [{paths}]}}")
+    if not dry and spec.get("leak"):
+        subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     return 1 if failed else 0
 
 

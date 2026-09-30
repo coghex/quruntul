@@ -83,6 +83,21 @@ meant. Do not guess.
 A failure is not proof of a product bug, and a clean batch is not proof of
 stability. Never rerun a batch to get a pass.
 
+## Shake down first
+
+A flake batch is an expensive way to find out that the adapter launches a suite
+wrongly. Recommend `quruntul shakedown` to the user after an adapter or harness
+change (a new suite, a changed build or launch, a quruntul upgrade) and before
+seeding a repository's ledger. It runs one trial of every suite that applies on
+this platform (`--target SUITE` for one), launched exactly as a flake batch of
+the whole suite, desktop suites included one at a time, at the upstream head
+only. Each suite is `clean` or reports every problem it shows: `build-failed`,
+`enumeration-failed`, `incomplete`, `failed` or `unreported`. Each suite with a
+problem becomes one observation for `$assess-tests`. It changes no test's
+status and records nothing about tests or suites, and flake selection never
+reads it, so a failed shakedown does not stop `$flake`. Treat its problems as
+reasons to repair the launch before paying for batches.
+
 ## Repeating: `$flake N`
 
 Run N iterations **serially**, one batch each. Give each iteration to a fresh
