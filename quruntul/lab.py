@@ -262,7 +262,7 @@ class Lab:
                 return dict(outcome="nothing-new", suite=suite.id)
             whole = len(selected) == len([r for r in rows.values() if r["status"] != "retired"])
             state_name, detail = self._trials(suite, prepared, run_id, owner, artifacts, selected, trials, whole)
-            measured = self._decide(suite, run_id, revision, selected, upstream, explicit)
+            measured = self._decide(suite, run_id, revision, selected, upstream, explicit, trials)
         except LabError as error:
             state_name, detail = "blocked", str(error)
         except KeyboardInterrupt:
@@ -422,7 +422,7 @@ class Lab:
             self.state.set_status(test_id, seed["status"], "seeded: " + str(seed.get("reason", "")),
                                   dict(seed=seed.get("evidence", {})))
 
-    def _decide(self, suite, run_id, revision, selected, upstream, explicit) -> dict:
+    def _decide(self, suite, run_id, revision, selected, upstream, explicit, requested) -> dict:
         """Counters for every selected test; status changes only for an upstream-head batch."""
         results = self.state.results(run_id)
         trials = {t["number"]: t for t in self.state.trials(run_id)}
@@ -437,8 +437,11 @@ class Lab:
             self.state.record_measurement(test_id, run_id, revision, complete, failures, outcome)
             row = self.state.test(test_id)
             became = None
-            planned = len(trials)
-            whole = all(t["state"] in ("passed", "failed") for t in trials.values())
+            # Every requested trial ran and completed as a process. A batch cut
+            # short (its budget, a harness error) has fewer trials than it asked
+            # for, and proves neither stability nor a consistent failure.
+            planned = requested
+            whole = len(trials) == requested and all(t["state"] in ("passed", "failed") for t in trials.values())
             # Failed in every trial: a consistent failure, not flakiness. In a
             # young project the harness or the environment is the first
             # suspect, so it goes to assessment rather than $deflake. This is
@@ -446,15 +449,18 @@ class Lab:
             # the status changes (a failing test measured again, a candidate).
             consistent = bool(failures and failures == planned > 1 and whole)
             if upstream:
+                # A failing test measured again is judged afresh, as a new one
+                # is: all trials failing keeps it failing, some makes it
+                # flaky ($deflake's), none makes it stable.
                 if consistent and row["status"] in ("new", "stable", "fixing"):
                     became = "failing"
-                elif failures and row["status"] in ("new", "stable", "fixing"):
+                elif failures and not consistent and row["status"] in ("new", "stable", "fixing", "failing"):
                     became = "flaky"
-                elif (not failures and row["status"] in ("new", "fixing") and passes == planned
-                      and all(t["state"] in ("passed", "failed") for t in trials.values())):
+                elif (not failures and row["status"] in ("new", "fixing", "failing") and passes == planned
+                      and whole):
                     became = "stable"
                 elif (not failures and not passes and row["status"] == "new" and complete == planned
-                      and all(t["state"] in ("passed", "failed") for t in trials.values())):
+                      and whole):
                     # Pending in every trial: this environment never exercises it.
                     # It is not measured, so it is neither stable nor new work.
                     became = "pending"

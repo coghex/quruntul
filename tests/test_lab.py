@@ -200,6 +200,25 @@ class LabTests(unittest.TestCase):
         self.assertIn("1 tests of unit failed every trial", repeat["document"]["title"])
         self.assertIn("failing 1", repeat["document"]["observed"])
         self.assertNotIn("Suggested follow-up: $deflake", Path(again["report"]).read_text())
+        # Measured again with the suite's inputs unchanged, a failing test is judged
+        # afresh: failing only some trials makes it flaky ($deflake's), passing
+        # every trial makes it stable.
+        (self.work / "override.json").write_text(json.dumps(dict(fail={"A/broken": [2]})))
+        git(self.work, "add", "override.json")
+        self.push("A/broken now fails only trial 2; A/also-broken passes")
+        self.assertEqual(self.statuses()["unit::A/broken"], "failing")
+        self.cli("flake", "--target", "unit::A/broken")
+        self.assertEqual(self.statuses()["unit::A/broken"], "flaky")
+        self.cli("flake", "--target", "unit::A/also-broken")
+        self.assertEqual(self.statuses()["unit::A/also-broken"], "stable")
+        (self.work / "override.json").unlink()
+        git(self.work, "rm", "-q", "--cached", "override.json")
+        git(self.work, "commit", "-qm", "drop the override")
+        git(self.work, "push", "-q", "origin", "master")
+        self.cli("mark", "unit::A/broken", "--status", "new", "--reason", "reset", "--evidence", "test")
+        self.cli("mark", "unit::A/also-broken", "--status", "new", "--reason", "reset", "--evidence", "test")
+        self.cli("flake", "--target", "unit")
+        self.assertEqual(self.statuses()["unit::A/broken"], "failing")
         # The harness or code is repaired: the suite's inputs change, so both are queued again.
         self.spec(dict(examples=["A/one", "A/broken", "A/also-broken"]))
         self.push("repair")
@@ -207,6 +226,27 @@ class LabTests(unittest.TestCase):
         self.assertEqual(sorted(repaired["summary"]["measured"]), ["unit::A/also-broken", "unit::A/broken"])
         self.assertEqual((self.statuses()["unit::A/broken"], self.statuses()["unit::A/also-broken"]),
                          ("stable", "stable"))
+
+    def test_a_batch_cut_short_is_neither_stable_nor_a_consistent_failure(self):
+        from quruntul import lab as lab_module
+        self.spec(dict(examples=["A/one", "A/broken"], fail={"A/broken": [1, 2, 3]}))
+        self.push("fails every trial it gets")
+        clock = iter([0, 0, 0, 10_000])  # the deadline, then room for exactly two of the three trials
+        real = lab_module.time
+        fake = type("Clock", (), dict(time=staticmethod(real.time), sleep=staticmethod(real.sleep),
+                                      monotonic=staticmethod(lambda: next(clock))))
+        lab_module.time = fake
+        try:
+            result = self.cli("flake", "--target", "unit", code=1)
+        finally:
+            lab_module.time = real
+        self.assertEqual(result["outcome"], "budget-exhausted")
+        self.assertEqual(result["summary"]["counts"], {"failed": 2})
+        statuses = self.statuses()
+        # Two passes of three requested prove nothing; two failures are a failure, not a consistent one.
+        self.assertEqual((statuses["unit::A/one"], statuses["unit::A/broken"]), ("new", "flaky"))
+        self.assertEqual(result["summary"]["newly_failing"], [])
+        self.assertNotIn("failed every trial", Path(result["report"]).read_text())
 
     def test_a_crash_is_never_counted_as_a_pass(self):
         self.spec(dict(examples=["A/one"], crash_on=[1, 2, 3]))
@@ -380,3 +420,4 @@ class HookTests(LabTests):
     test_an_always_pending_example_does_not_requeue_its_suite = None
     test_child_output_does_not_hide_examples_and_an_unreported_one_is_observed = None
     test_a_test_failing_every_trial_is_failing_and_requeued_when_its_inputs_change = None
+    test_a_batch_cut_short_is_neither_stable_nor_a_consistent_failure = None
