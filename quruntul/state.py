@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
+import os
 from pathlib import Path
 import sqlite3
 import time
@@ -90,7 +91,7 @@ class State:
         """Open the ledger, creating or migrating it to this schema.
 
         With `migrate` false an older ledger is left at its schema, and a missing one is not created,
-        for a caller that migrates (or creates) it inside its own commit: until `create`, it reads as
+        for a caller that migrates (or builds) it inside its own commit: until `build`, it reads as
         an empty ledger."""
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -116,12 +117,31 @@ class State:
             raise LabError(f"unsupported ledger schema {self.version}; this quruntul supports {SCHEMA}")
         self.db.execute("PRAGMA foreign_keys=ON")
 
-    def create(self) -> None:
-        """Open the real ledger for a caller that deferred creating it; it then migrates it itself."""
-        if self.uncreated:
-            self.db.close()
+    def build(self, path: Path) -> None:
+        """For a caller that deferred creating the ledger: build the new ledger at `path`, beside the
+        caller's own staged files, so `publish_built` puts it in place whole or it never appears."""
+        self.db.close()
+        self.db = sqlite3.connect(path, isolation_level=None)
+        self.db.row_factory = sqlite3.Row
+        self.db.execute("PRAGMA synchronous=FULL")
+        self.db.execute("PRAGMA foreign_keys=ON")
+        self.built = Path(path)
+
+    def publish_built(self) -> None:
+        """Link the built ledger into place, never over a ledger another process created meanwhile."""
+        self.db.close()
+        try:
+            os.link(self.built, self.path)
+        except FileExistsError:
+            raise LabError("another process created the ledger during this import; nothing was imported") from None
+        finally:
             self._connect()
             self.uncreated = False
+        descriptor = os.open(self.directory, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
 
     # -- schema ---------------------------------------------------------------
 

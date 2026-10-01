@@ -57,7 +57,8 @@ _read = os.read
 
 
 def _checkpoint(name: str) -> None:
-    """A point at which an import can be interrupted: 'staged', 'published', 'commit' or 'committed'."""
+    """A point at which an import can be interrupted: 'staged', 'published', 'commit', 'ledger' (a new
+    ledger built but not yet in place) or 'committed'."""
 
 
 class Refused(Exception):
@@ -142,14 +143,21 @@ def _check(kind: str, record: dict, name: str) -> list[str]:
     used as a key before its type is known."""
     required, optional = FIELDS[kind]
     problems = []
-    missing, unknown = sorted(required - set(record)), sorted(set(record) - required - optional)
+    fields = {key for key in record if isinstance(key, str)}
+    missing, unknown = sorted(required - fields), sorted(fields - required - optional)
     if missing:
         problems.append(f"{name}: missing {', '.join(missing)}")
     if unknown:
         problems.append(f"{name}: unknown fields {', '.join(unknown)}")
+    if len(fields) != len(record):
+        problems.append(f"{name}: field names must be text, not "
+                        + ", ".join(repr(key) for key in record if not isinstance(key, str)))
     try:
-        json.dumps(record, allow_nan=False)
+        # Plain JSON survives a round trip unchanged: text keys at every depth, lists not tuples, no NaN.
+        plain = json.loads(json.dumps(record, allow_nan=False, sort_keys=True)) == record
     except (TypeError, ValueError):
+        plain = False
+    if not plain:
         problems.append(f"{name}: not plain JSON")
     for field in ("document", "provenance"):
         if field in record and not isinstance(record[field], dict):
@@ -547,6 +555,9 @@ def _publish(lab, directory: Path, planned: dict, suites: dict, revision: str, u
     try:
         stage.mkdir(parents=True)
         atomic_json(stage / "journal.json", dict(import_id=import_id, destinations=destinations))
+        # Recovery finds the import only through its journal: make the stage's own entry durable first.
+        for folder in (stage.parent, directory, directory.parent):
+            _fsync_directory(folder)
         for entry in copies:
             record = entry["record"]
             entry["sha256"] = _copy(record["path"], record["size"], stage / "files" / entry["destination"])
@@ -563,7 +574,7 @@ def _publish(lab, directory: Path, planned: dict, suites: dict, revision: str, u
                                                                                   directory.parent}:
             _fsync_directory(folder)
         _checkpoint("commit")
-        _commit(lab.state, planned, suites, import_id, at, revision, document)
+        _commit(lab.state, planned, suites, import_id, at, revision, document, stage)
     except CopyFailed as error:
         _discard(lab.state, directory, import_id)
         return dict(outcome="refused", problems=[str(error)])
@@ -601,10 +612,15 @@ def _report(import_id, at, revision, upstream_ref, adapter, planned, suites) -> 
                               for e in evidence if e["record"]["mode"] == "reference"])
 
 
-def _commit(state, planned, suites, import_id, at, revision, document) -> None:
-    """Every row of the import in one transaction, after checking the ledger again inside it."""
+def _commit(state, planned, suites, import_id, at, revision, document, stage: Path) -> None:
+    """Every row of the import in one transaction, after checking the ledger again inside it.
+
+    On a repository with no ledger the transaction builds a new one inside the import's stage, and the
+    commit is linking it into place: until then a failure or an interruption leaves no ledger at all."""
     records = planned["records"]
-    state.create()
+    built = stage / "ledger.sqlite3" if state.uncreated else None
+    if built:
+        state.build(built)
     db = state.db
     with state.transaction():
         try:
@@ -684,4 +700,7 @@ def _commit(state, planned, suites, import_id, at, revision, document) -> None:
                        (_utc(finished), suites[suite_id].identity, suite_id))
         state.event("imported", import_id, dict(revision=revision, imported={
             kind: n for kind, n in Counter(e["kind"] for e in planned["new"]).items()}))
+    if built:
+        _checkpoint("ledger")
+        state.publish_built()
     state.version = state.schema()

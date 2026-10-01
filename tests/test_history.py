@@ -603,6 +603,44 @@ class FreshRepositoryTests(HistoryFixture):
         self.assertEqual(self.ledger()["version"], 2)
         self.assertEqual(len(self.ledger()["rows"]["imports"]), 1)
 
+    def test_a_failure_inside_the_first_commit_leaves_no_ledger_behind(self):
+        legacy = standard(self.legacy_root)
+        self.supply(legacy)
+        with mock.patch.object(State, "event", side_effect=RuntimeError("disk full")), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), \
+                self.assertRaisesRegex(RuntimeError, "disk full"):
+            cli.main(["--repo", str(self.work), "import-history"])
+        self.assertEqual(self.ledger_files(), [])
+        self.assertFalse([p for p in (self.directory / "imported").rglob("*") if p.is_file()])
+        # Interrupted with the new ledger built but not yet in place: still no ledger, and recovery
+        # removes the build with the rest of the import's leftovers.
+        self.interrupted("ledger")
+        self.assertEqual(self.ledger_files(), [])
+        self.assertTrue([p for p in (self.directory / "imported").rglob("*") if p.is_file()])
+        refusing = legacy.document()
+        refusing["proposals"][0]["status"] = "accepted"
+        self.assertEqual(len(self.refused(refusing, "open item")["recovered"]), 1)
+        self.assertEqual(self.ledger_files(), [])
+        self.assertFalse([p for p in (self.directory / "imported").rglob("*") if p.is_file()])
+        self.supply(legacy)
+        self.assertEqual(self.importing()["outcome"], "imported")
+
+
+class ValidationTests(unittest.TestCase):
+    def test_hook_output_that_is_not_plain_json_is_refused_not_raised(self):
+        run = dict(source=ref("run", "r1"), target="probe-a", revision="r", started="2026-08-12T10:00:00Z",
+                   finished="2026-08-12T10:00:00Z", status="passed")
+        records, problems = history.validate(dict(runs=[
+            {**run, 3: "bad"},
+            dict(run, source=ref("run", "r2"), document={1: "a", "b": 2}),
+            dict(run, source=ref("run", "r3"), provenance=dict(at=("tuple",))),
+            dict(run, source=ref("run", "r4"), document=dict(x=float("nan")))]))
+        self.assertEqual(len(records), 4)
+        self.assertIn(f"{STORE}/run/r1: field names must be text, not 3", problems)
+        self.assertIn(f"{STORE}/run/r1: not plain JSON", problems)
+        for ident in ("r2", "r3", "r4"):
+            self.assertIn(f"{STORE}/run/{ident}: not plain JSON", problems)
+
 
 class AtomicityTests(HistoryFixture):
     def check(self, incremental):
