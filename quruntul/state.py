@@ -65,8 +65,10 @@ BASE = (
 )
 
 # Each migration upgrades the schema before it by one, inside one transaction.
-# Plain CREATE TABLE, so a ledger it cannot apply to fails and is left as it was.
+# From schema 1 on they are plain CREATE TABLE, so a ledger one cannot apply to
+# fails and is left as it was.
 MIGRATIONS = {
+    1: BASE,
     # Legacy history imports (docs/design.md, Legacy history import).
     2: (
         """CREATE TABLE imports (
@@ -85,11 +87,26 @@ MIGRATIONS = {
 
 class State:
     def __init__(self, directory: Path, migrate: bool = True):
-        """Open the ledger. An older schema is migrated in place unless `migrate` is false,
-        which leaves it for a caller that migrates inside its own transaction."""
+        """Open the ledger, creating or migrating it to this schema.
+
+        With `migrate` false an older ledger is left at its schema, and a missing one is not created,
+        for a caller that migrates (or creates) it inside its own commit: until `create`, it reads as
+        an empty ledger."""
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(self.directory / "ledger.sqlite3", timeout=30, isolation_level=None)
+        self.path = self.directory / "ledger.sqlite3"
+        self.uncreated = not migrate and not self.path.exists()
+        if self.uncreated:
+            self.db = sqlite3.connect(":memory:", isolation_level=None)
+            self.db.row_factory = sqlite3.Row
+            self.version = 0
+            return
+        self._connect()
+        if self.version < SCHEMA and migrate:
+            self.migrate()
+
+    def _connect(self) -> None:
+        self.db = sqlite3.connect(self.path, timeout=30, isolation_level=None)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA busy_timeout=30000")
         self.db.execute("PRAGMA journal_mode=WAL")
@@ -97,16 +114,14 @@ class State:
         self.version = self.db.execute("PRAGMA user_version").fetchone()[0]
         if not 0 <= self.version <= SCHEMA:
             raise LabError(f"unsupported ledger schema {self.version}; this quruntul supports {SCHEMA}")
-        if self.version == 0:
-            with self.transaction():
-                for statement in BASE:
-                    self.db.execute(statement)
-                self.db.execute("PRAGMA user_version=1")
-                self.upgrade()
-            self.version = SCHEMA
-        elif self.version < SCHEMA and migrate:
-            self.migrate()
         self.db.execute("PRAGMA foreign_keys=ON")
+
+    def create(self) -> None:
+        """Open the real ledger for a caller that deferred creating it; it then migrates it itself."""
+        if self.uncreated:
+            self.db.close()
+            self._connect()
+            self.uncreated = False
 
     # -- schema ---------------------------------------------------------------
 
@@ -554,6 +569,8 @@ class State:
     def import_view(self) -> dict:
         """What an import checks itself against. A ledger not yet migrated has imported nothing."""
         imported, evidence = {}, {}
+        if self.schema() == 0:  # not created yet: nothing to conflict with
+            return dict(imported=imported, evidence=evidence, proposals={}, suites={}, observations=set())
         if self.schema() >= 2:
             imported = {r["identity"]: dict(r) | {"document": json.loads(r["document"])}
                         for r in self.db.execute("SELECT * FROM imported")}

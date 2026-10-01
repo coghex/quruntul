@@ -159,6 +159,8 @@ def standard(root: Path) -> Legacy:
 
 
 class HistoryFixture(LabFixture):
+    initialize = True  # create the ledger first, as any earlier lane would have
+
     def setUp(self):
         super().setUp()
         (self.work / ".quruntul" / "adapter.py").write_text(HISTORY_ADAPTER)
@@ -169,7 +171,8 @@ class HistoryFixture(LabFixture):
         environment.start()
         self.addCleanup(environment.stop)
         self.legacy_root = Path(self.temp.name) / "legacy"
-        self.cli("status")  # the ledger every snapshot compares against
+        if self.initialize:
+            self.cli("status")  # the ledger every snapshot compares against
 
     # -- helpers -------------------------------------------------------------
 
@@ -390,6 +393,15 @@ class ImportTests(HistoryFixture):
         document["evidence"][0]["mode"] = "photocopy"
         document["evidence"][1]["path"] = "relative/run.log"
         document["proposals"].append(dict(source=dict(store=STORE, kind="run", id="p9")))
+        # Values of the wrong type are refused, never used as keys, and a missing field hides nothing else.
+        document["runs"][3]["status"] = []
+        document["evidence"][2]["role"] = []
+        document["evidence"][3]["mode"] = {"copy": True}
+        document["evidence"][4]["size"] = "10"
+        document["observations"][1]["disposition"] = 5
+        document["assessments"][1]["status"] = ["approved"]
+        document["proposals"][1]["status"] = None
+        document["proposals"][1]["refers"] = "o1"
         ledger, files = self.ledger(), self.files()
         self.refused(document,
                      f"{STORE}/run/r1: status must be one of passed, failed, cancelled, error, not 'exploded'",
@@ -402,7 +414,15 @@ class ImportTests(HistoryFixture):
                      f"{STORE}/proposal/p1: created must be an ISO 8601 timestamp",
                      f"{STORE}/evidence/r1/report: mode must be one of copy, reference, absent",
                      f"{STORE}/evidence/r1/log: path must be an absolute path",
-                     "proposals[2]: needs a source identity {store, kind: proposal, id}")
+                     "proposals[2]: needs a source identity {store, kind: proposal, id}",
+                     f"{STORE}/run/r4: status must be one of passed, failed, cancelled, error, not []",
+                     f"{STORE}/evidence/r2/report: role must be one of report, log, document, other, not []",
+                     f"{STORE}/evidence/r2/log: mode must be one of copy, reference, absent, not {{'copy': True}}",
+                     f"{STORE}/evidence/r2/screenshot: size must be the file's size in bytes",
+                     f"{STORE}/observation/o2: disposition must be nonblank text",
+                     f"{STORE}/assessment/a2: status must be text, not ['approved']",
+                     f"{STORE}/proposal/p2: status must be text, not None",
+                     f"{STORE}/proposal/p2: refers must be a list of references")
         self.assertUntouched(ledger, files)
 
     def test_dangling_references_are_refused(self):
@@ -558,6 +578,30 @@ class ImportTests(HistoryFixture):
             result = self.importing(code=2)
         self.assertIn("legacy_history needs quruntul 0.4.0", result["error"])
         self.assertUntouched(ledger, files)
+
+
+class FreshRepositoryTests(HistoryFixture):
+    initialize = False
+
+    def ledger_files(self):
+        return sorted(p.name for p in self.directory.glob("ledger.sqlite3*")) if self.directory.exists() else []
+
+    def test_a_refused_first_import_leaves_no_ledger_behind(self):
+        legacy = standard(self.legacy_root)
+        refusing = legacy.document()
+        refusing["proposals"][0]["status"] = "accepted"
+        self.refused(refusing, "open item")
+        self.assertEqual(self.ledger_files(), [])
+        log = self.legacy_root / "r4" / "run.log"
+        log.write_text("a log of another size\n")
+        self.refused(legacy, f"{log}: declared")
+        self.assertEqual(self.ledger_files(), [])
+        self.assertFalse([p for p in (self.directory / "imported").rglob("*") if p.is_file()])
+        log.write_text("log of r4\n")
+        self.supply(legacy)
+        self.assertEqual(self.importing()["outcome"], "imported")
+        self.assertEqual(self.ledger()["version"], 2)
+        self.assertEqual(len(self.ledger()["rows"]["imports"]), 1)
 
 
 class AtomicityTests(HistoryFixture):

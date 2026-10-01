@@ -138,6 +138,8 @@ def validate(history) -> tuple[dict, list[str]]:
 
 
 def _check(kind: str, record: dict, name: str) -> list[str]:
+    """Every problem in one record. A missing field never hides another field's problem, and no value is
+    used as a key before its type is known."""
     required, optional = FIELDS[kind]
     problems = []
     missing, unknown = sorted(required - set(record)), sorted(set(record) - required - optional)
@@ -152,19 +154,19 @@ def _check(kind: str, record: dict, name: str) -> list[str]:
     for field in ("document", "provenance"):
         if field in record and not isinstance(record[field], dict):
             problems.append(f"{name}: {field} must be an object")
-    if missing:
-        return problems
 
     def text(field):
-        if not (isinstance(record[field], str) and record[field].strip()):
+        if field in record and not (isinstance(record[field], str) and record[field].strip()):
             problems.append(f"{name}: {field} must be nonblank text")
 
     def when(field):
-        if instant(record[field]) is None:
+        if field in record and instant(record[field]) is None:
             problems.append(f"{name}: {field} must be an ISO 8601 timestamp with a UTC offset, not {record[field]!r}")
 
     def references(field, kinds, many=False):
-        values = record.get(field, [] if many else None)
+        if field not in record:
+            return
+        values = record[field]
         if many and not isinstance(values, list):
             problems.append(f"{name}: {field} must be a list of references")
             return
@@ -175,16 +177,27 @@ def _check(kind: str, record: dict, name: str) -> list[str]:
             if key is None or kind_of(key) not in kinds:
                 problems.append(f"{name}: {field} must reference a {' or '.join(kinds)} by {{store, kind, id}}")
 
+    def decided(field, accepted, open_item):
+        """A status: one accepted value, an open item when it is other text, malformed otherwise."""
+        if field not in record or record[field] in accepted:
+            return
+        if isinstance(record[field], str) and record[field].strip():
+            problems.append(f"{name}: {open_item(record[field])}")
+        else:
+            problems.append(f"{name}: {field} must be text, not {record[field]!r}")
+
     if kind == "run":
         text("target")
         text("revision")
         when("started")
         when("finished")
-        started, finished = instant(record["started"]), instant(record["finished"])
+        started, finished = instant(record.get("started")), instant(record.get("finished"))
         if started and finished and finished < started:
             problems.append(f"{name}: finished before it started")
-        status = record["status"]
-        if status in NONTERMINAL:
+        status = record.get("status")
+        if "status" not in record:
+            pass
+        elif isinstance(status, str) and status in NONTERMINAL:
             problems.append(f"{name}: open item: status {status!r} is not terminal")
         elif status not in RUN_STATUSES:
             problems.append(f"{name}: status must be one of {', '.join(RUN_STATUSES)}, not {status!r}")
@@ -193,29 +206,27 @@ def _check(kind: str, record: dict, name: str) -> list[str]:
     elif kind == "observation":
         references("run", ("run",))
         references("assessment", ("assessment",))
-        number = record["number"]
+        number = record.get("number", 1)
         if not isinstance(number, int) or isinstance(number, bool) or number < 1:
             problems.append(f"{name}: number must be a positive integer")
         text("title")
         if not isinstance(record.get("area", ""), str):
             problems.append(f"{name}: area must be text")
-        if record["disposition"] is None:
+        if "disposition" in record and record["disposition"] is None:
             problems.append(f"{name}: open item: the observation has no final disposition")
         else:
             text("disposition")
     elif kind == "assessment":
         when("created")
         references("observations", ("observation",), many=True)
-        if record["status"] != "approved":
-            problems.append(f"{name}: open item: the assessment is {record['status']!r}, not approved")
+        decided("status", ("approved",), lambda status: f"open item: the assessment is {status!r}, not approved")
     elif kind == "proposal":
         text("target")
         text("lane")
         when("created")
         references("refers", ("run", "observation", "assessment"), many=True)
-        if record["status"] not in DECIDED:
-            problems.append(f"{name}: open item: the proposal is {record['status']!r}, "
-                            f"not {', '.join(DECIDED[:-1])} or {DECIDED[-1]}")
+        decided("status", DECIDED, lambda status: f"open item: the proposal is {status!r}, "
+                                                  f"not {', '.join(DECIDED[:-1])} or {DECIDED[-1]}")
     else:
         problems += _check_evidence(record, name)
     return problems
@@ -223,24 +234,29 @@ def _check(kind: str, record: dict, name: str) -> list[str]:
 
 def _check_evidence(record: dict, name: str) -> list[str]:
     problems = []
-    owner = identity(record["owner"])
-    role, mode = record["role"], record["mode"]
-    if role not in ROLES:
+    role, mode = record.get("role"), record.get("mode")
+    known_role, known_mode = role in ROLES, mode in MODES  # each then a str, safe to use as a key
+    if "role" in record and not known_role:
         problems.append(f"{name}: role must be one of {', '.join(ROLES)}, not {role!r}")
-    if mode not in MODES:
+    if "mode" in record and not known_mode:
         problems.append(f"{name}: mode must be one of {', '.join(MODES)}, not {mode!r}")
-    owners = {"report": ("run",), "log": ("run",), "document": ("assessment",)}.get(role, ("run", "assessment"))
-    if owner is None or kind_of(owner) not in owners:
-        problems.append(f"{name}: owner must reference a {' or '.join(owners)} by {{store, kind, id}}")
+    if "owner" in record:
+        owners = {"report": ("run",), "log": ("run",), "document": ("assessment",)}.get(
+            role if known_role else "other", ("run", "assessment"))
+        owner = identity(record["owner"])
+        if owner is None or kind_of(owner) not in owners:
+            problems.append(f"{name}: owner must reference a {' or '.join(owners)} by {{store, kind, id}}")
     if mode == "absent":
         if "path" in record or "size" in record:
             problems.append(f"{name}: an absent entry names no path or size")
-    elif mode in MODES:
+    elif known_mode or "path" in record or "size" in record:
         path, size = record.get("path"), record.get("size")
         if not isinstance(path, str) or not os.path.isabs(path) or os.path.basename(path) in ("", ".", ".."):
             problems.append(f"{name}: path must be an absolute path to a file")
         if not isinstance(size, int) or isinstance(size, bool) or size < 0:
             problems.append(f"{name}: size must be the file's size in bytes")
+    if not (known_role and known_mode):
+        return problems
     if role == "report" and mode != "copy":
         problems.append(f"{name}: a run's report is always copied, never {mode!r}")
     elif role in ("log", "document") and mode == "reference":
@@ -542,7 +558,9 @@ def _publish(lab, directory: Path, planned: dict, suites: dict, revision: str, u
             (final / relative).parent.mkdir(parents=True, exist_ok=True)
             os.rename(stage / "files" / relative, final / relative)
             _checkpoint("published")
-        for folder in {(final / relative).parent for relative in destinations}:
+        # Every directory entry the import created, up to the lab directory, is durable before the commit.
+        for folder in {(final / relative).parent for relative in destinations} | {final, directory,
+                                                                                  directory.parent}:
             _fsync_directory(folder)
         _checkpoint("commit")
         _commit(lab.state, planned, suites, import_id, at, revision, document)
@@ -586,6 +604,7 @@ def _report(import_id, at, revision, upstream_ref, adapter, planned, suites) -> 
 def _commit(state, planned, suites, import_id, at, revision, document) -> None:
     """Every row of the import in one transaction, after checking the ledger again inside it."""
     records = planned["records"]
+    state.create()
     db = state.db
     with state.transaction():
         try:

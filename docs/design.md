@@ -361,8 +361,9 @@ and refuses, naming each problem, rather than dropping a record or failing
 partway. It refuses:
 
 - a malformed record, status, timestamp or relation: a missing or unknown
-  field, a value outside the vocabularies above, a timestamp without an
-  offset, or a reference to the wrong kind of record;
+  field, a value of the wrong type or outside the vocabularies above, a
+  timestamp without an offset, or a reference to the wrong kind of record.
+  Every field present is checked, so a missing field hides no other problem;
 - a reference to a run, assessment or observation that is neither supplied nor
   already imported;
 - two supplied records sharing an identity, even one imported before;
@@ -454,7 +455,8 @@ time, under the `import.lock` file lock, and it proceeds in order:
 2. Stage every copy under `imported/.staging/<import-id>/`, after writing a
    journal of the import's own destinations.
 3. Publish the staged copies and the import report into
-   `imported/<import-id>/`.
+   `imported/<import-id>/`, and sync every directory entry it created, up to
+   the lab directory, so a durable commit never names a missing file.
 4. Commit every row in one ledger transaction, after checking freshness and
    proposal conflicts again inside it, so activity since step 1 cannot
    invalidate the import. This durable commit is the import's success
@@ -479,7 +481,9 @@ evidence and queue, and recording the new schema version; a ledger already at
 schema 2 is left alone. A migration that cannot apply fails and leaves the
 ledger as it was. `quruntul import-history` instead migrates inside its own
 commit, so a refused or interrupted import leaves an older ledger at its
-schema. The ledger is never reset.
+schema, and on a repository with no ledger it creates one only when it
+commits: a refused first import leaves no ledger behind. The ledger is never
+reset.
 
 ## Legacy repositories
 
