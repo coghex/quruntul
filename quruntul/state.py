@@ -15,13 +15,78 @@ import uuid
 
 from quruntul.common import LabError, text_hash, utc
 
-SCHEMA = 1
+SCHEMA = 2
 STATUSES = ("new", "stable", "flaky", "failing", "fixing", "pending", "retired")
 DEFAULT_LEASE = 600
 
+# Schema 1: every lane's tables. A new ledger is created at schema 1 and then
+# migrated, so a new ledger and a migrated one are built by the same statements.
+BASE = (
+    "CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, document TEXT NOT NULL)",
+    """CREATE TABLE IF NOT EXISTS suites (
+        id TEXT PRIMARY KEY, document TEXT NOT NULL, identity TEXT, revision TEXT,
+        enumerated TEXT, last_test_run TEXT, last_test_identity TEXT)""",
+    """CREATE TABLE IF NOT EXISTS tests (
+        id TEXT PRIMARY KEY, suite TEXT NOT NULL, path TEXT NOT NULL, kind TEXT NOT NULL,
+        status TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+        trials INTEGER NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0,
+        last_run TEXT, last_outcome TEXT, last_failure TEXT, status_changed TEXT NOT NULL,
+        measured_revision TEXT, pr TEXT, note TEXT)""",
+    "CREATE INDEX IF NOT EXISTS tests_suite ON tests(suite, status)",
+    """CREATE TABLE IF NOT EXISTS runs (
+        id TEXT PRIMARY KEY, lane TEXT NOT NULL, suite TEXT, revision TEXT NOT NULL,
+        source_ref TEXT NOT NULL, upstream INTEGER NOT NULL, started TEXT NOT NULL,
+        heartbeat TEXT NOT NULL, state TEXT NOT NULL, finished_epoch REAL,
+        document TEXT NOT NULL, summary TEXT)""",
+    """CREATE TABLE IF NOT EXISTS trials (
+        run_id TEXT NOT NULL REFERENCES runs(id), number INTEGER NOT NULL,
+        state TEXT NOT NULL, document TEXT NOT NULL, PRIMARY KEY(run_id, number))""",
+    """CREATE TABLE IF NOT EXISTS results (
+        run_id TEXT NOT NULL REFERENCES runs(id), number INTEGER NOT NULL,
+        test_id TEXT NOT NULL, outcome TEXT NOT NULL, PRIMARY KEY(run_id, number, test_id))""",
+    """CREATE TABLE IF NOT EXISTS claims (
+        resource TEXT PRIMARY KEY, owner TEXT NOT NULL, lane TEXT NOT NULL,
+        acquired TEXT NOT NULL, heartbeat REAL NOT NULL, lease REAL NOT NULL, document TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS observations (
+        id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), number INTEGER NOT NULL,
+        title TEXT NOT NULL, area TEXT, status TEXT NOT NULL, assessment TEXT,
+        document TEXT NOT NULL, created TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS assessments (
+        id TEXT PRIMARY KEY, status TEXT NOT NULL, owner TEXT NOT NULL,
+        document TEXT NOT NULL, created TEXT NOT NULL, updated TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS deferrals (
+        id TEXT PRIMARY KEY, reason TEXT NOT NULL, resume_when TEXT NOT NULL, created TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS proposals (
+        id TEXT PRIMARY KEY, target_id TEXT UNIQUE NOT NULL, lane TEXT NOT NULL,
+        status TEXT NOT NULL, document TEXT NOT NULL, created TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS events (
+        id INTEGER PRIMARY KEY, at TEXT NOT NULL, kind TEXT NOT NULL,
+        subject TEXT NOT NULL, document TEXT NOT NULL)""",
+)
+
+# Each migration upgrades the schema before it by one, inside one transaction.
+# Plain CREATE TABLE, so a ledger it cannot apply to fails and is left as it was.
+MIGRATIONS = {
+    # Legacy history imports (docs/design.md, Legacy history import).
+    2: (
+        """CREATE TABLE imports (
+            id TEXT PRIMARY KEY, at TEXT NOT NULL, revision TEXT NOT NULL, report TEXT NOT NULL,
+            document TEXT NOT NULL)""",
+        """CREATE TABLE imported (
+            identity TEXT PRIMARY KEY, kind TEXT NOT NULL, local_id TEXT NOT NULL,
+            import_id TEXT NOT NULL REFERENCES imports(id), digest TEXT NOT NULL, document TEXT NOT NULL)""",
+        """CREATE TABLE evidence (
+            id TEXT PRIMARY KEY, owner TEXT NOT NULL, role TEXT NOT NULL, mode TEXT NOT NULL,
+            source_path TEXT, size INTEGER, destination TEXT, sha256 TEXT,
+            import_id TEXT NOT NULL REFERENCES imports(id), document TEXT NOT NULL)""",
+    ),
+}
+
 
 class State:
-    def __init__(self, directory: Path):
+    def __init__(self, directory: Path, migrate: bool = True):
+        """Open the ledger. An older schema is migrated in place unless `migrate` is false,
+        which leaves it for a caller that migrates inside its own transaction."""
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.directory / "ledger.sqlite3", timeout=30, isolation_level=None)
@@ -29,56 +94,46 @@ class State:
         self.db.execute("PRAGMA busy_timeout=30000")
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
-        version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, SCHEMA):
-            raise LabError(f"unsupported ledger schema {version}; this quruntul supports {SCHEMA}")
-        if version == 0:
-            self.db.executescript("""
-                BEGIN IMMEDIATE;
-                CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, document TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS suites (
-                    id TEXT PRIMARY KEY, document TEXT NOT NULL, identity TEXT, revision TEXT,
-                    enumerated TEXT, last_test_run TEXT, last_test_identity TEXT);
-                CREATE TABLE IF NOT EXISTS tests (
-                    id TEXT PRIMARY KEY, suite TEXT NOT NULL, path TEXT NOT NULL, kind TEXT NOT NULL,
-                    status TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
-                    trials INTEGER NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0,
-                    last_run TEXT, last_outcome TEXT, last_failure TEXT, status_changed TEXT NOT NULL,
-                    measured_revision TEXT, pr TEXT, note TEXT);
-                CREATE INDEX IF NOT EXISTS tests_suite ON tests(suite, status);
-                CREATE TABLE IF NOT EXISTS runs (
-                    id TEXT PRIMARY KEY, lane TEXT NOT NULL, suite TEXT, revision TEXT NOT NULL,
-                    source_ref TEXT NOT NULL, upstream INTEGER NOT NULL, started TEXT NOT NULL,
-                    heartbeat TEXT NOT NULL, state TEXT NOT NULL, finished_epoch REAL,
-                    document TEXT NOT NULL, summary TEXT);
-                CREATE TABLE IF NOT EXISTS trials (
-                    run_id TEXT NOT NULL REFERENCES runs(id), number INTEGER NOT NULL,
-                    state TEXT NOT NULL, document TEXT NOT NULL, PRIMARY KEY(run_id, number));
-                CREATE TABLE IF NOT EXISTS results (
-                    run_id TEXT NOT NULL REFERENCES runs(id), number INTEGER NOT NULL,
-                    test_id TEXT NOT NULL, outcome TEXT NOT NULL, PRIMARY KEY(run_id, number, test_id));
-                CREATE TABLE IF NOT EXISTS claims (
-                    resource TEXT PRIMARY KEY, owner TEXT NOT NULL, lane TEXT NOT NULL,
-                    acquired TEXT NOT NULL, heartbeat REAL NOT NULL, lease REAL NOT NULL, document TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS observations (
-                    id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), number INTEGER NOT NULL,
-                    title TEXT NOT NULL, area TEXT, status TEXT NOT NULL, assessment TEXT,
-                    document TEXT NOT NULL, created TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS assessments (
-                    id TEXT PRIMARY KEY, status TEXT NOT NULL, owner TEXT NOT NULL,
-                    document TEXT NOT NULL, created TEXT NOT NULL, updated TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS deferrals (
-                    id TEXT PRIMARY KEY, reason TEXT NOT NULL, resume_when TEXT NOT NULL, created TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS proposals (
-                    id TEXT PRIMARY KEY, target_id TEXT UNIQUE NOT NULL, lane TEXT NOT NULL,
-                    status TEXT NOT NULL, document TEXT NOT NULL, created TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS events (
-                    id INTEGER PRIMARY KEY, at TEXT NOT NULL, kind TEXT NOT NULL,
-                    subject TEXT NOT NULL, document TEXT NOT NULL);
-                PRAGMA user_version=1;
-                COMMIT;
-            """)
+        self.version = self.db.execute("PRAGMA user_version").fetchone()[0]
+        if not 0 <= self.version <= SCHEMA:
+            raise LabError(f"unsupported ledger schema {self.version}; this quruntul supports {SCHEMA}")
+        if self.version == 0:
+            with self.transaction():
+                for statement in BASE:
+                    self.db.execute(statement)
+                self.db.execute("PRAGMA user_version=1")
+                self.upgrade()
+            self.version = SCHEMA
+        elif self.version < SCHEMA and migrate:
+            self.migrate()
         self.db.execute("PRAGMA foreign_keys=ON")
+
+    # -- schema ---------------------------------------------------------------
+
+    def migrate(self) -> None:
+        """Upgrade an older ledger in place: every migration in one transaction, or none of them.
+
+        Idempotent: a ledger already at this schema is left alone. It never resets a ledger."""
+        previous = self.version
+        if previous == SCHEMA:
+            return
+        try:
+            with self.transaction():
+                self.upgrade()
+        except sqlite3.Error as error:
+            raise LabError(f"cannot migrate the ledger from schema {previous} to {SCHEMA} ({error}); "
+                           "it is unchanged") from error
+        self.version = SCHEMA
+
+    def upgrade(self) -> None:
+        """Apply the pending migrations inside the caller's transaction; the caller commits or rolls back."""
+        if not self.db.in_transaction:
+            raise LabError("migrations run inside a transaction")
+        current = self.db.execute("PRAGMA user_version").fetchone()[0]
+        for version in range(current + 1, SCHEMA + 1):
+            for statement in MIGRATIONS[version]:
+                self.db.execute(statement)
+            self.db.execute(f"PRAGMA user_version={version}")
 
     # -- plumbing -----------------------------------------------------------
 
@@ -416,6 +471,8 @@ class State:
     def record_issue(self, identifier: str, finding: str, url: str) -> None:
         with self.transaction():
             record = self.assessment(identifier)
+            if record["document"].get("imported"):
+                raise LabError(f"{identifier} is imported legacy history; it is closed")
             if record["status"] not in ("approved", "filed"):
                 raise LabError("issues are recorded only for an approved assessment")
             filed = record["document"].get("issues", {})
@@ -480,6 +537,38 @@ class State:
         if status not in ("accepted", "rejected", "designed", "implemented", "superseded") or not note.strip():
             raise LabError("a proposal disposition needs a status and a nonblank note")
         with self.transaction():
-            if not self.db.execute("UPDATE proposals SET status=? WHERE id=?", (status, identifier)).rowcount:
+            row = self.db.execute("SELECT document FROM proposals WHERE id=?", (identifier,)).fetchone()
+            if row is None:
                 raise LabError(f"unknown proposal {identifier!r}")
+            if json.loads(row["document"]).get("imported"):
+                raise LabError(f"{identifier} is imported legacy history; its decision is closed")
+            self.db.execute("UPDATE proposals SET status=? WHERE id=?", (status, identifier))
             self.event("proposal-" + status, identifier, dict(note=note))
+
+    # -- imported history ----------------------------------------------------
+
+    def schema(self) -> int:
+        """The schema on disk now; another process may have migrated it since this one opened."""
+        return self.db.execute("PRAGMA user_version").fetchone()[0]
+
+    def import_view(self) -> dict:
+        """What an import checks itself against. A ledger not yet migrated has imported nothing."""
+        imported, evidence = {}, {}
+        if self.schema() >= 2:
+            imported = {r["identity"]: dict(r) | {"document": json.loads(r["document"])}
+                        for r in self.db.execute("SELECT * FROM imported")}
+            evidence = {r["id"]: dict(r) for r in self.db.execute("SELECT * FROM evidence")}
+        return dict(imported=imported, evidence=evidence,
+                    proposals={r["target_id"]: r["id"] for r in self.db.execute("SELECT id, target_id FROM proposals")},
+                    suites={r["id"]: dict(r) for r in self.db.execute("SELECT * FROM suites")},
+                    observations={r[0] for r in self.db.execute("SELECT id FROM observations")})
+
+    def import_committed(self, identifier: str) -> bool:
+        return self.schema() >= 2 and self.db.execute(
+            "SELECT 1 FROM imports WHERE id=?", (identifier,)).fetchone() is not None
+
+    def imports(self) -> list[dict]:
+        if self.schema() < 2:
+            return []
+        return [dict(r) | {"document": json.loads(r["document"])}
+                for r in self.db.execute("SELECT * FROM imports ORDER BY at, id")]

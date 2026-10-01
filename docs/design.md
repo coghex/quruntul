@@ -235,8 +235,10 @@ that relies on newer engine behaviour refuses an older engine. 0.2.0 added the
 rule that exact per-test selection supersedes a suite's own `--match`
 selectors (its `--skip` selectors still apply), which profile suites need.
 0.3.0 added the `failing` status for a test that fails every requested trial,
-and reads Hspec trial output against the suite's enumerated paths. It defines
-`adapter()` returning an object with:
+and reads Hspec trial output against the suite's enumerated paths. 0.4.0 added
+the optional `legacy_history` hook and `quruntul import-history`; an adapter
+supplying the hook refuses an older engine. It defines `adapter()` returning an
+object with:
 
 - `name` — the repository's name.
 - `suites(ctx)` — every suite at the checkout: id, kind (`ci`/`probe`),
@@ -260,6 +262,10 @@ and reads Hspec trial output against the suite's enumerated paths. It defines
   - `seed` — `{path: {status, reason, evidence}}` for tests the ledger has just
     met, carrying an older lab's verdicts over. Only `new` tests are seeded,
     only to `stable` or `flaky`, and each seed is a recorded status event.
+- Optional: `legacy_history(ctx)` — the repository's legacy `$test` history,
+  for `quruntul import-history` alone (see
+  [Legacy history import](#legacy-history-import)). No lane calls it, and an
+  adapter without it behaves exactly as before.
 
 For Hspec suites the engine does the rest: enumeration (`--dry-run
 --format=checks`), exact per-test selection (`--match /path/`), per-trial
@@ -291,6 +297,190 @@ validates it and ingests each observation into the ledger, where
 automatically: every newly flaky test becomes one observation. Shakedowns do
 too: every suite with a problem becomes one observation.
 
+Imported legacy history keeps its copied evidence under
+`<git-common-dir>/quruntul/imported/<import-id>/`, beside that import's
+`import-report.json`. `quruntul export` archives the ledger, every file under
+`runs/`, and exactly the imported files the exported ledger snapshot records,
+so an archive holds each import whole or not at all.
+
+## Legacy history import
+
+`quruntul import-history` imports a repository's legacy `$test` history, which
+its adapter reads from the legacy store and supplies through the
+`legacy_history(ctx)` hook. It runs only when the owner runs it; no lane
+imports on its own. It never runs, replays or re-executes a run or a trial,
+during an import or during recovery. It reports what it imported, attached,
+archived and left unchanged, or, when it refuses, every problem it found, never
+only the first. A refusal exits 1 and changes nothing.
+
+### The hook
+
+The adapter is loaded from the upstream head, pinned once: its suite
+declarations, the suites' identities and the hook all come from that one
+revision, and `ctx` cannot run processes. The import prepares, enumerates,
+seeds and executes nothing, and recovers no native run. `legacy_history(ctx)`
+returns a mapping whose only keys are `runs`, `observations`, `assessments`,
+`proposals` and `evidence`, each a list (a missing key is an empty list). Every
+record has a `source` identity, `{store, kind, id}`: the stable source store,
+the record kind (`run`, `observation`, `assessment`, `proposal` or `evidence`,
+matching its list), and the source record's id. A reference to another record
+has the same shape. Records are plain JSON; `document` and `provenance`, where
+allowed, are objects kept as supplied. The fields are:
+
+| Kind | Required | Optional |
+|---|---|---|
+| run | `source`, `target`, `revision`, `started`, `finished`, `status` | `interpretation`, `document`, `provenance` |
+| observation | `source`, `run`, `number`, `title`, `disposition` | `area`, `assessment`, `document`, `provenance` |
+| assessment | `source`, `status`, `created` | `observations`, `document`, `provenance` |
+| proposal | `source`, `target`, `lane`, `status`, `created` | `refers`, `document`, `provenance` |
+| evidence | `source`, `owner`, `role`, `mode` | `path`, `size`, `provenance` |
+
+The adapter normalizes its store's own vocabulary to these values:
+
+- A run's `target` is the source target name, matched exactly against suite
+  ids. Its `status` is terminal: `passed`, `failed`, `cancelled` or `error`.
+  `pending`, `queued`, `preparing`, `running` and `started` are open items.
+  `interpretation`, when present, is a report status (`clean`, `observations`,
+  `inconclusive`, `blocked`). `started` and `finished` (its completion time)
+  are ISO 8601 timestamps with a UTC offset, and `finished` is not before
+  `started`.
+- An observation refers to its `run`, and optionally to the `assessment` that
+  decided it. `number` is its positive number within the run. `disposition` is
+  its final disposition as text; `null` means it was never assessed, which is
+  an open item.
+- An assessment's `status` is `approved` when the source approved it; any other
+  value is an open item. `observations` lists those it covers.
+- A proposal's `status` is `rejected`, `designed` or `implemented`; any other
+  value is undecided, an open item. `refers` lists the runs, observations or
+  assessments it came from.
+
+### Validation
+
+Before anything is written, the import validates the complete supplied history
+and refuses, naming each problem, rather than dropping a record or failing
+partway. It refuses:
+
+- a malformed record, status, timestamp or relation: a missing or unknown
+  field, a value outside the vocabularies above, a timestamp without an
+  offset, or a reference to the wrong kind of record;
+- a reference to a run, assessment or observation that is neither supplied nor
+  already imported;
+- two supplied records sharing an identity, even one imported before;
+- an open item: a nonterminal run, an observation without a final
+  disposition, an unapproved assessment, or an undecided proposal;
+- duplicate or conflicting evidence entries: two entries for the same source
+  file of the same record, or two that map to the same destination;
+- any manifest or conflict problem below.
+
+### Closed history, matching and freshness
+
+An import writes only closed history. Runs are ledger runs in lane
+`imported`, finished, with their source identity, revision, provenance and the
+whole record kept. Observations are `assessed`, with their final disposition.
+Assessments are `approved`, and proposals keep their decided status.
+Imported assessments and proposals are closed: issues are not recorded against
+them and their decisions are not changed. None of it enters an open queue, and
+the existing limit of one proposal per target holds: an imported proposal
+occupies its target as any proposal does.
+
+A new run whose target names a suite the adapter declares at the upstream head
+attaches to that suite. Every other run is archived: attached to no suite, and
+counting toward no freshness. For each matched suite, only its new imported
+runs count. Its `last_test_run` becomes the newest one's completion time and
+its `last_test_identity` the suite's identity at the upstream head at import
+time, so several runs of one suite contribute only their newest. A matched
+suite the ledger has never declared gets its declaration row, without any
+enumeration. An existing suite row changes only these two fields.
+
+### Evidence manifest
+
+Each evidence entry is its own record. It names the run or assessment it
+belongs to (`owner`), its `role`, its `mode`, and, unless it is absent, its
+absolute source `path` and declared `size` in bytes. Roles are `report` and
+`log` (a run's), `document` (an assessment's), and `other` (an image or small
+artifact of either). Modes are `copy`, `reference` and `absent`:
+
+- Every supplied run has exactly one report entry, always `copy`, and exactly
+  one log entry: its `copy`, or `absent` when the source history never had
+  one. Every supplied assessment likewise has exactly one document entry,
+  `copy` or `absent`. A manifest that omits one, or declares a report, an
+  existing log or an existing assessment document `reference`, is refused. A
+  promised file that is simply missing is a refusal, never an absence.
+- Any other file may be `copy` or `reference`. The engine never discovers files
+  by walking directories and applies no size threshold of its own: copy work is
+  bounded by the declared sizes and their total.
+- A `copy` is copied to `imported/<import-id>/<owner>/<file name>`, a
+  destination no earlier path can occupy, and its source path, destination
+  and SHA-256 are recorded in the entry's provenance. A promised copy that is
+  missing, unreadable, not a regular file, a different size from its
+  declaration, or changed while being read refuses the whole import, naming the
+  file and the reason. It is never truncated, omitted or downgraded to a
+  reference.
+- A `reference` is recorded by source path and provenance only, and is never
+  read. It is disclosed as excluded from export both in the import report's
+  `excluded_from_export` and in the entry's provenance; both are exported.
+  Nothing describes its bytes as copied.
+- An `absent` entry names no path or size and is recorded as absent.
+
+### Idempotence and conflicts
+
+Idempotence is judged against immutable source content and evidence, never
+against engine-generated import timestamps, local destinations or current
+suite matching. A record whose identity was imported before with identical
+content, and, for a copy, the same SHA-256, is a no-op even after later ledger
+activity, and keeps its original attachment and identity snapshot. A record
+whose content or copied bytes changed under an imported identity refuses the
+import, as does any change to a run's or assessment's set of evidence entries
+(its manifest). Only genuinely new records are checked for conflicts and
+applied to freshness. An import with nothing new changes nothing and writes no
+file.
+
+It refuses, naming each conflict, when:
+
+- a matched suite's ledger `last_test_run` is later than or equal to its newest
+  new run's completion time, compared as UTC instants;
+- a new proposal's target already has a proposal, native or imported, or two
+  new proposals share a target, whatever their stores.
+
+### All or nothing
+
+A successful import adds its records and evidence and changes only the
+specified freshness of matched suites; every other ledger row, queue and
+evidence file stays as it was, and completed evidence is never rewritten.
+Source files and the source store are never modified. One import runs at a
+time, under the `import.lock` file lock, and it proceeds in order:
+
+1. Validate the complete history and check it against the ledger.
+2. Stage every copy under `imported/.staging/<import-id>/`, after writing a
+   journal of the import's own destinations.
+3. Publish the staged copies and the import report into
+   `imported/<import-id>/`.
+4. Commit every row in one ledger transaction, after checking freshness and
+   proposal conflicts again inside it, so activity since step 1 cannot
+   invalidate the import. This durable commit is the import's success
+   boundary.
+5. Remove the staging directory.
+
+Before the commit, a refusal or failure removes the import's own files, and an
+interruption leaves only unpublished leftovers. No reader and no export sees
+them: export takes imported files only from its ledger snapshot. The next
+import first recovers: for an uncommitted import it removes exactly the files
+its journal names and the empty directories they leave, and for a committed one
+it keeps every record and copy and removes only the staging directory. Recovery
+never deletes a pre-existing path and never resets the ledger. Failed imports,
+and imports with nothing new, regenerate no view.
+
+### Migration
+
+Schema 2 adds the `imports`, `imported` and `evidence` tables. The migration is
+explicit and idempotent: every other command upgrades a populated schema-1
+ledger in place, in one transaction, keeping every native row, piece of
+evidence and queue, and recording the new schema version; a ledger already at
+schema 2 is left alone. A migration that cannot apply fails and leaves the
+ledger as it was. `quruntul import-history` instead migrates inside its own
+commit, so a refused or interrupted import leaves an older ledger at its
+schema. The ledger is never reset.
+
 ## Legacy repositories
 
 Synarchy's census-based flake lab and its `codex-test`/`codex-profile`
@@ -300,5 +490,6 @@ routes Synarchy to its preserved legacy workflow under
 the census still authoritative for deferrals and seeding each probe's first
 status through the adapter's `seed` hook. `$playtest` keeps Synarchy on its own
 harness until its adapter implements `playtest()`, and `$assess-tests` still
-drains the legacy `codex-test` registry separately. `$profile`/`$performance`
+drains the legacy `codex-test` registry separately until that registry's closed
+history is imported through `legacy_history`. `$profile`/`$performance`
 keep their `codex-profile` coordinator in every repository for now.

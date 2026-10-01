@@ -20,7 +20,7 @@ import time
 import uuid
 
 from quruntul import adapter as adapters
-from quruntul import hspec, process, report, select
+from quruntul import history, hspec, process, report, select
 from quruntul.common import LabError, atomic_json, command, file_hash, git, utc
 from quruntul.state import State
 
@@ -33,11 +33,11 @@ SCRUBBED = ("GHCRTS",)
 
 
 class Lab:
-    def __init__(self, repo: str | Path = ".", log=print):
+    def __init__(self, repo: str | Path = ".", log=print, migrate: bool = True):
         self.root = Path(git(Path(repo), "rev-parse", "--show-toplevel"))
         self.common = Path(git(self.root, "rev-parse", "--path-format=absolute", "--git-common-dir"))
         self.directory = self.common / "quruntul"
-        self.state = State(self.directory)
+        self.state = State(self.directory, migrate)
         self.log = log
 
     # -- revisions and checkouts --------------------------------------------
@@ -982,6 +982,12 @@ class Lab:
                     next_step=f"Interpret the log, complete {artifacts / 'report.md'}, then "
                               f"`quruntul report attach {run_id}`.")
 
+    # -- legacy history -------------------------------------------------------
+
+    def import_history(self) -> dict:
+        """Import the adapter's legacy `$test` history; only ever on the owner's command (history.py)."""
+        return history.run(self)
+
     # -- reports --------------------------------------------------------------
 
     def attach(self, run_id: str) -> dict:
@@ -1024,7 +1030,8 @@ class Lab:
         lines += ["", "## Recent runs", "", "| Run | Lane | Suite | Started | State | Revision |",
                   "|---|---|---|---|---|---|"]
         for run in self.state.runs(limit=40):
-            lines.append(f"| [{run['id'][:8]}](runs/{run['id']}/report.md) | {run['lane']} | {run['suite'] or '—'} | "
+            name = run["id"][:8] if run["lane"] == "imported" else f"[{run['id'][:8]}](runs/{run['id']}/report.md)"
+            lines.append(f"| {name} | {run['lane']} | {run['suite'] or '—'} | "
                          f"{run['started']} | {run['state']} | `{run['revision'][:12]}` |")
         live = self.state.claims()
         lines += ["", "## Active claims", ""] + ([f"- `{c['resource']}` — {c['owner']} ({c['lane']})" for c in live]
