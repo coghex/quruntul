@@ -10,6 +10,8 @@ verdicts. This skill verifies them against the current code, groups them by
 cause, drafts one issue per real, untracked problem, and files those issues
 after the owner approves the frozen assessment.
 
+Run this skill in a **Class A** session (see the `model-classes` skill).
+
 ## Route by repository
 
 Resolve the Git top level and read its `AGENTS.md` completely.

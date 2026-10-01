@@ -9,6 +9,8 @@ Turn one `flaky` test into a merged-ready fix. One iteration owns one test, from
 claim to PR. The ledger moves it to `fixing`; the next `$flake` after the PR
 merges verifies it on the merged revision and marks it `stable` or `flaky`.
 
+Run this skill in a **Class B** session (see the `model-classes` skill).
+
 ## Route by repository
 
 Resolve the Git top level and read its `AGENTS.md` (or `CLAUDE.md`) completely.

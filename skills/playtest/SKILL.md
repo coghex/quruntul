@@ -10,6 +10,8 @@ to do next?* — by letting an uninformed agent play from screenshots only, then
 interpreting the trace. It complements probes: probes check contracts, a
 playtest checks perception.
 
+Run this skill in a **Class B** session (see the `model-classes` skill).
+
 ## Route by repository
 
 Resolve the Git top level and read its `AGENTS.md`.

@@ -10,6 +10,8 @@ and, only with separate explicit authorization, deliver one accepted finding.
 The source measurements are evidence, not verdicts: verify their methodology,
 comparability, artifacts, and relevance before recommending work.
 
+Run this skill in a **Class B** session (see the `model-classes` skill).
+
 Use the installed sibling `$profile` skill's
 `scripts/profile_coordinator.py` for every report claim, assessment document,
 and coordinator-owned lab, analysis, or delivery transition. Use its delivery

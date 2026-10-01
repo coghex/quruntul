@@ -21,6 +21,8 @@ is a row in quruntul's ledger with a status:
   the test on the merged revision.
 - `retired`: no longer present upstream.
 
+Run this skill in a **Class B** session (see the `model-classes` skill).
+
 So `$flake` spends its time only on new tests, tests whose fix just merged, and
 explicit targets. It is not a periodic re-test; that is `$test`, which covers
 probes.

@@ -7,6 +7,8 @@ description: Run the installed $test skill serially for a requested number of it
 
 Orchestrate repeated, independent `$test` invocations. `$test` remains the sole authority for selecting, coordinating, executing, interpreting, reporting, and cleaning up each test; do not copy or weaken its workflow here.
 
+Run this in a **Class B** session (see the `model-classes` skill). Its workers inherit this session's class, so they run on Class B too.
+
 Keep this as a foreground loop in the current conversation. Do not create a daemon, scheduled task, background shell loop, recurring goal, or persistent service.
 
 ## Parse the invocation
@@ -33,7 +35,7 @@ When collaboration workers are available, use one fresh worker for each iteratio
 Use $test in <absolute-repository-path> and complete exactly one invocation of the installed test skill. Read and follow that skill and the repository instructions in full. Do not begin a second test. Return its standard handoff, including whether it attached a validated result report, reached a missing-test proposal, or was blocked. Apply its open-issue blocker rule and return skipped test IDs, issue links, and whether an independent test may proceed.
 ```
 
-Do not override the worker model or reasoning effort. If delegation is unavailable, perform the same single `$test` invocation locally before beginning another.
+Workers inherit this session's class (Class B): do not override the worker model or reasoning effort. If delegation is unavailable, perform the same single `$test` invocation locally before beginning another.
 
 An iteration counts as completed when `$test` attaches its validated standard `*.test-result.md` report, regardless of whether its interpretation is `clean`, `observations`, `inconclusive`, or `blocked`. A missing-test proposal is an approval boundary, not a completed test iteration. A blocker reached before a report is attached is also not a completed iteration.
 

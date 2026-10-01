@@ -50,7 +50,7 @@ inapplicable:
 
 - persona: `curious_carl`;
 - goal: `Start a new game, create a world, and figure out what to do next.`;
-- player: `codex-luna` (`gpt-5.6-luna`, medium effort);
+- player: `codex` (the owner's Class B Codex model and effort);
 - 12 turns;
 - 600 seconds maximum session time;
 - 90 seconds maximum per decision;
@@ -66,10 +66,12 @@ completed 12-turn run made no meaningful progress, a later invocation may use
 16–20 turns under the user's standing approval; never extend or retry the
 current invocation silently. One invocation owns one persona/goal session.
 
-The user may select `claude-sonnet` (`claude-sonnet-5`, medium effort) instead.
-Treat natural requests for “Sonnet” or “Claude” as that fixed profile. Without
-a provider request, keep `codex-luna`. Never accept an arbitrary model or effort
-override, mix profiles within a run, or fall back from the selected profile.
+The user may select `claude` instead. Treat natural requests for “Claude” as
+that profile. Without a provider request, keep `codex`. Both profiles run on the
+owner's Class B, which synarchy resolves through `modelclass` when the run starts
+and records in `meta.json`'s `player_model`; report the model and effort it
+recorded. Never accept an arbitrary model or effort override, mix profiles
+within a run, or fall back from the selected profile.
 
 Do not substitute `--smoke`, `--replay`, `--selftest`, a screenshot check, an
 offscreen boot check, a manual scenario, or a behavior probe. Those test the
@@ -89,8 +91,9 @@ In the refreshed base snapshot, read `tools/playtest/README.md`,
 `tools/playtest/agent.py`, and `tools/playtest/run.py`. Require all of the
 following:
 
-- `--player` exposes exactly `codex-luna` (`gpt-5.6-luna`, medium, Codex CLI)
-  and `claude-sonnet` (`claude-sonnet-5`, medium, Claude Code);
+- `--player` exposes exactly `codex` (Codex CLI) and `claude` (Claude Code),
+  each resolving the owner's Class B model and effort through `modelclass` at
+  start (`modelclass` must be on PATH);
 - each decision is isolated from repository access and outside information:
   Codex disables user rules/config, web, plugins, skills, shell, and
   multi-agent tools; Claude uses safe mode, no persisted session or MCP/skills,
@@ -127,7 +130,7 @@ python3 tools/playtest/run.py \
   --port <unused-port> \
   --persona <persona> \
   --goal <goal> \
-  --player <codex-luna|claude-sonnet> \
+  --player <codex|claude> \
   --turns <turns> \
   --max-seconds <seconds> \
   --decision-timeout <seconds> \

@@ -10,6 +10,9 @@ Observe what happens, and leave a report another agent can act on. Probes are
 the lab's advanced, often long experiments, and some only run this way. `$test`
 never runs a CI test; flakiness in CI tests is `$flake`'s job.
 
+Run this skill in a **Class B** session (see the `model-classes` skill).
+Its workers inherit this session's class, so they run on Class B too.
+
 ## Route by repository
 
 Resolve the Git top level and read its `AGENTS.md` (or `CLAUDE.md`) completely.

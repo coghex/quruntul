@@ -10,6 +10,8 @@ for `$performance`. Do not modify production code, file an issue, open a PR,
 push a branch, publish documentation, or recommend implementation changes as if
 they were established by the measurement.
 
+Run this skill in a **Class B** session (see the `model-classes` skill).
+
 The lab is deliberately local. Its `profile-lab` branch never carries unique
 commits and only fast-forwards from the upstream base. The persistent worktree
 may detach temporarily at a committed target revision. Registry state, the
