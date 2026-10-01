@@ -5,6 +5,7 @@ import argparse
 import json
 from pathlib import Path
 import re
+import sqlite3
 import sys
 import zipfile
 import os
@@ -147,6 +148,9 @@ def parser() -> argparse.ArgumentParser:
     pl = sub.add_parser("proposals")
     pl.add_argument("--status")
 
+    sub.add_parser("import-history", help="import the adapter's legacy $test history (closed history only; "
+                                          "all or nothing; never runs anything)")
+
     ex = sub.add_parser("export", help="a portable archive of the ledger and all run evidence")
     ex.add_argument("--output", required=True)
     ck = sub.add_parser("checkouts", help="list lab checkouts; --prune removes inactive ones")
@@ -232,6 +236,8 @@ def run(args, lab: Lab):
         return dict(outcome=args.status, proposal=args.id)
     if op == "proposals":
         return s.proposals(args.status)
+    if op == "import-history":
+        return lab.import_history()
     if op == "export":
         return export(lab, Path(args.output))
     if op == "checkouts":
@@ -347,25 +353,47 @@ def export(lab: Lab, target: Path) -> dict:
             backup = lab.directory / "ledger-export.sqlite3"
             lab.state.db.execute("VACUUM INTO ?", (str(backup),))
             archive.write(backup, "ledger.sqlite3")
+            imported = _imported_files(backup)
             backup.unlink()
             archive.write(lab.directory / "ledger.md", "ledger.md")
             for artifact in sorted((lab.directory / "runs").rglob("*")):
                 if artifact.is_file():
                     archive.write(artifact, artifact.relative_to(lab.directory))
+            for relative in imported:
+                archive.write(lab.directory / relative, relative)
         os.replace(temporary, target)
     finally:
         temporary.unlink(missing_ok=True)
     return dict(outcome="exported", path=str(target))
 
 
+def _imported_files(snapshot: Path) -> list[str]:
+    """Imported evidence and import reports exactly as the exported ledger snapshot records them.
+
+    Never a directory walk: an import committing after the snapshot, and an unpublished or interrupted
+    one, is absent from the archive as a whole."""
+    db = sqlite3.connect(f"file:{snapshot}?mode=ro", uri=True)
+    try:
+        tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if not {"imports", "evidence"} <= tables:
+            return []
+        return sorted({r[0] for r in db.execute("SELECT destination FROM evidence WHERE destination IS NOT NULL")}
+                      | {r[0] for r in db.execute("SELECT report FROM imports")})
+    finally:
+        db.close()
+
+
 def main(argv=None) -> int:
     args = parser().parse_args(argv)
     lab = None
     try:
-        lab = Lab(args.repo, log=lambda message: print(message, file=sys.stderr, flush=True))
+        # An import migrates an older ledger inside its own commit, so a refused one leaves it as it was.
+        lab = Lab(args.repo, log=lambda message: print(message, file=sys.stderr, flush=True),
+                  migrate=args.op != "import-history")
         result = run(args, lab)
         print(json.dumps(result, indent=2, sort_keys=True, default=str))
-        if isinstance(result, dict) and result.get("outcome") in ("blocked", "interrupted", "budget-exhausted"):
+        if isinstance(result, dict) and result.get("outcome") in ("blocked", "interrupted", "budget-exhausted",
+                                                                  "refused"):
             return 1
         return 0
     except (LabError, OSError, ValueError) as error:

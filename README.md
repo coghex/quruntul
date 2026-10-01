@@ -66,6 +66,7 @@ quruntul tests --status flaky
 quruntul mark TEST --status flaky --reason "failed in CI" --evidence URL
 quruntul test                           # one due probe
 quruntul report attach RUN              # validate a completed report, ingest observations
+quruntul import-history                 # import the adapter's closed legacy $test history; all or nothing
 quruntul export --output /path/lab.zip  # portable archive of ledger and evidence
 ```
 
