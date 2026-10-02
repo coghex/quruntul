@@ -15,13 +15,9 @@ concrete precondition
 
 ## Processing status
 
-- [ ] EPIC. Shake down adapters and bring Synarchy onto quruntul
-- [ ] QS-1. Add a one-trial shakedown lane that proves an adapter launches every suite
-- [ ] QS-2. Import a repository's legacy `$test` history into the ledger through an adapter hook
-- [ ] QS-6. Read Synarchy's `codex-test` registry through the adapter's legacy-history hook
-- [ ] QS-3. Shake down every Synarchy suite and repair its adapter
-- [ ] QS-4. Size `synarchy-test-headless`'s flake slices from a measured trial
-- [ ] QS-5. Seed Synarchy's flake ledger
+- [x] EPIC. Shake down adapters and bring Synarchy onto quruntul — [#5]
+- [x] QS-1. Add a one-trial shakedown lane that proves an adapter launches every suite — [#6]
+- [x] QS-2. Import a repository's legacy `$test` history into the ledger through an adapter hook — [#8]
 
 ## Epic contract
 
@@ -133,7 +129,11 @@ applies on this platform (or of the one target) at the upstream head.
   exactly the launch that flake batches will use.
 - It records a run in a new lane, `shakedown`, and writes a
   `quruntul-result/v1` report.
-- It never changes a test's status.
+- It never changes a test's status, and writes nothing about tests or suites
+  to the ledger (D-12). Its enumeration is compared with what the ledger
+  knows, and differences are reported, not recorded: new tests, and ledger
+  tests no longer listed. The next `$flake` enumeration records them.
+- It runs only at the upstream head, never at a candidate `--ref` (D-13).
 - Per suite, it reports one of: build failed, enumeration failed, examples
   unreported (`missing`), examples failed, or clean.
 - Each non-clean suite becomes one observation for `$assess-tests`.
@@ -165,6 +165,25 @@ store, keeping the engine free of `codex-test` specifics.
 - Only closed history is imported (D-5): runs, observations with their final
   dispositions, approved assessments, and decided proposals. None enters an
   open queue.
+- The owner starts it with a dedicated command, and a repeated run changes
+  nothing (D-14).
+- Evidence follows a finite manifest the adapter declares, with no
+  engine-chosen size cap. Each file is either:
+  - `copy`: copied with its SHA-256, and carried by export;
+  - `reference`: recorded by path, and disclosed as excluded from export in
+    the import report and per-record provenance, both of which are exported
+    (D-18).
+
+  A promised copy that cannot be copied exactly refuses the import (D-15).
+- Records are identified by source store, record kind and source record id.
+  The import is all-or-nothing. Identical, already-imported records are
+  no-ops, even after later ledger activity, and a changed one is refused.
+  Each of these refuses the import (D-16, D-17):
+  - duplicate identities in the supplied input;
+  - freshness that would move backwards or stay equal;
+  - a proposal target the ledger already holds, under its existing limit
+    of one proposal per target;
+  - any copy failure.
 - The import refuses a legacy store that still has open items, naming them.
   Open means an unassessed observation, or a proposal that is not rejected,
   designed or implemented (D-8). A partial drain therefore cannot be imported
@@ -323,6 +342,153 @@ standalone quruntul PR, not as a slice here:
 - the README's stale adapter references;
 - discarding the stale `docs-wip` README edit.
 
+### D-12. A shakedown writes nothing about tests or suites to the ledger
+
+The owner chose this on 2026-09-30, while QS-1 was processed. In the flake
+lane, enumeration at the upstream head (`State.enumerated`) adds new tests,
+retires vanished ones, re-queues `pending` and `failing` tests when a suite's
+identity changes, and records the suite's identity. A shakedown does none of
+that. It reads the ledger, compares its own enumeration against it, and
+reports the differences: new tests, and ledger tests no longer listed. The
+next `$flake` enumeration records them. The shakedown records only its own
+run, report and observations.
+Rejected:
+- adding new tests as `new` while retiring and re-queueing nothing;
+- recording enumeration exactly as the flake lane does, which would retire
+  and re-queue tests and so change status.
+
+### D-13. A shakedown runs only at the upstream head
+
+The owner chose this on 2026-09-30, while QS-1 was processed. It takes no
+`--ref`.
+Rejected: accepting a candidate `--ref`, harmless since a shakedown changes
+no status, so that an adapter fix could be shaken down before its pull
+request merges.
+Consequence: QS-3's adapter fixes are verified by a shakedown after they
+merge. Each fix's own pull request relies on its adapter checks and on
+focused runs.
+
+### D-14. An import runs only when the owner runs its command
+
+The owner chose this on 2026-09-30, while QS-2 was processed. A dedicated
+quruntul command runs the import once and reports what it imported, archived
+and refused. Running it again changes nothing. No lane imports on its own.
+Rejected: importing automatically whenever the adapter's hook has unimported
+history, for example at the start of `$test` or `$flake`.
+
+### D-15. Named evidence is copied or referenced exactly as the adapter declares
+
+The owner chose copying on 2026-09-30, while QS-2 was processed, and refined
+it the same day.
+
+- **A finite manifest.** For each imported run and assessment, the hook
+  returns an explicit list of files. Each entry gives:
+  - its source path;
+  - its role: report, log, assessment document, or other evidence such as an
+    image or a small artifact;
+  - its declared size;
+  - whether it is `copy` or `reference`.
+
+  The engine never discovers files by walking directories and applies no byte
+  threshold of its own. Copy work is bounded by the manifest's declared sizes
+  and their total.
+- **Copies.** Reports, and whichever run logs and assessment documents exist,
+  are declared `copy`, and the adapter may declare any other file `copy` too.
+  The engine copies every `copy` entry into the matching quruntul run or
+  assessment evidence and records its source path, destination and SHA-256 in
+  provenance. Copied evidence survives `quruntul export`. The whole import is
+  refused, naming the file and the reason, when a promised copy is:
+  - missing or unreadable;
+  - not a regular file;
+  - a different size from its declaration;
+  - changed while being read.
+
+  A promised copy is never truncated, omitted or downgraded to a reference.
+- **References.** A `reference` entry is recorded with its source path and
+  provenance only. The import's report and the run's provenance mark it as
+  excluded from portable export, and no run with a reference is described as
+  self-contained.
+- **Preservation.** Source files, the legacy store, the existing ledger and
+  all existing evidence are never modified or deleted. An import that refuses
+  or fails, including partway through staging or publication, leaves no new
+  visible ledger rows and no imported evidence files. Recovering from an
+  interrupted import never deletes pre-existing evidence or resets the
+  ledger.
+- **Implementation details:** streaming, regular-file and path validation, a
+  space check before copying, and detecting a source that changes during the
+  import.
+
+Rejected:
+- recording the legacy report path as provenance only;
+- an engine-chosen size threshold that could turn a named file into a
+  reference or leave it out.
+
+### D-16. An import is all-or-nothing, idempotent per source record, and refuses conflicts
+
+The owner chose refusal on 2026-09-30, while QS-2 was processed, and refined
+it the same day.
+
+- **Source identity.** Every imported record carries a namespaced identity,
+  and the ledger keeps it. The identity is the stable source store, the
+  record kind, and the source record id: for example Synarchy's `codex-test`
+  registry, `run`, and a legacy run id. A bare legacy id is never an
+  identity. Imported records are runs, observations, assessments, proposals
+  and evidence files.
+- **Idempotence.** Only one thing is exempt: a record whose identity was
+  already imported with identical content and evidence, meaning the same
+  copied SHA-256s. It is a no-op. A record whose content or evidence changed
+  since it was imported is refused. Repeating an identical source is a no-op
+  even after later legitimate ledger activity. Only genuinely new records are
+  checked for freshness conflicts and applied to freshness. This is
+  collision-proof idempotence, not a model of archived and current
+  records.
+- **Freshness.** For each matched suite, only its genuinely new runs count.
+  `last_test_run` becomes the newest one's completion time, and
+  `last_test_identity` the suite's identity at import time (D-4). Several runs
+  of one suite contribute only their newest.
+- **Conflicts.** These are checked among genuinely new records, and each one
+  refuses the whole import by name:
+  - two records in the supplied input with the same identity, even when a
+    record with that identity was imported before;
+  - a matched suite whose ledger `last_test_run` is later than, or equal to,
+    its newest new run's completion time, compared as UTC instants. A later
+    time would move freshness backwards, and an equal one cannot justify
+    changing `last_test_identity` (D-17);
+  - an imported proposal whose target already has a quruntul proposal
+    imported from another source record or created in quruntul. The ledger
+    keeps its existing limit of one proposal per target.
+- **Atomicity.** Any conflict, any D-15 validation or copy failure, and any
+  open item under D-8 refuse the whole import, and nothing is written.
+- **Proposals.** There is no archived-versus-current split. An imported
+  decided proposal occupies its target as any proposal does, so a later
+  `quruntul propose` for that target returns it.
+
+Rejected:
+- letting the ledger win, which skips and lists conflicting history;
+- letting the import overwrite the ledger.
+
+### D-17. An equal freshness time is a conflict
+
+The owner accepted this on 2026-09-30 (resolves Q-10). When a matched suite's
+ledger `last_test_run` equals the completion time of its newest genuinely
+new imported run, as UTC instants, the import is refused as a conflict. An
+equal time cannot tell the engine whether it is the same observation, so it
+cannot justify replacing `last_test_identity`. Identical, previously
+imported records stay no-ops even after later ledger activity (D-16).
+Rejected: applying an equal time, which keeps the time but replaces the
+identity.
+
+### D-18. References are disclosed in the import report and per-record provenance
+
+The owner accepted this on 2026-09-30 (resolves Q-11). Evidence that is only
+referenced, not copied, is disclosed as excluded from portable export in two
+places: the import's report and each record's provenance. Both are part of
+every export, since the report is in the run's evidence and the provenance
+is in the ledger. `quruntul export` gains no additional manifest. Tests
+verify that the disclosure is present in an exported report and ledger, and
+that nothing claims referenced bytes were copied.
+Rejected: an additional export manifest of excluded references.
+
 ## Open questions
 
 ### Q-1. Which suites does a shakedown run, and what counts as clean?
@@ -369,6 +535,15 @@ Resolved by D-11 (a standalone quruntul PR).
 Resolved by D-8 (assessed and decided, checked by QS-6 as a precondition;
 the import refuses a store that fails it).
 
+### Q-10. Does an equal freshness time conflict?
+
+Resolved by D-17 (it is a conflict and refuses the import).
+
+### Q-11. Where are excluded references disclosed?
+
+Resolved by D-18 (in the import report and per-record provenance, both
+exported; no additional export manifest).
+
 ## Verification strategy
 
 - **Engine:** fixture-driven lab tests in `tests/test_lab.py`, in the style of
@@ -385,6 +560,10 @@ the import refuses a store that fails it).
 
 ## Delivery plan
 
+> **Moved (2026-10-02).** QS-3, QS-4, QS-5 and QS-6 are Synarchy-side slices
+> (D-6). They are processed from coghex/synarchy's
+> `docs/designs/quruntul_onboarding_design.md`, not from this ledger.
+
 ### QS-1. Add a one-trial shakedown lane that proves an adapter launches every suite
 
 - **Outcome:** `quruntul shakedown` runs one trial per suite through the
@@ -396,7 +575,7 @@ the import refuses a store that fails it).
 - **Phase:** 1
 - **Depends on:** none
 - **Ordering:** critical path; can land first
-- **Relevant decisions:** D-1, D-3, D-6 (filed in coghex/quruntul), D-7
+- **Relevant decisions:** D-1, D-3, D-6 (filed in coghex/quruntul), D-7, D-12, D-13
 - **Acceptance signals:** the lab tests above; a clean shakedown of
   Hetoimasia.
 - **Out of scope:** gating flake selection (D-3).
@@ -412,77 +591,24 @@ the import refuses a store that fails it).
 - **Phase:** 1
 - **Depends on:** none
 - **Ordering:** independent (parallel with QS-1)
-- **Relevant decisions:** D-2, D-4, D-5, D-6 (filed in coghex/quruntul), D-8, D-9
-- **Acceptance signals:** fixture tests for idempotence, provenance, matched
-  and archived targets, freshness set at the current identity, only closed
-  history imported, and refusal of a store with open items.
+- **Relevant decisions:** D-2, D-4, D-5, D-6 (filed in coghex/quruntul), D-8, D-9, D-14, D-15, D-16, D-17, D-18
+- **Acceptance signals:** fixture tests for:
+  - identities namespaced by source store, record kind and source record id;
+  - idempotence, including after later ledger activity;
+  - refusal of a changed record under an imported identity;
+  - refusal of duplicate identities in the input, even when previously
+    imported;
+  - provenance;
+  - matched and archived targets;
+  - freshness from the newest new run at the current identity;
+  - refusal of later or equal ledger freshness (D-17);
+  - only closed history imported;
+  - `copy` evidence with SHA-256 carried by export;
+  - `reference` evidence disclosed in the exported report and ledger, with
+    nothing claiming its bytes were copied (D-18);
+  - refusal for a missing, changed or wrongly sized promised copy;
+  - refusal for a store with open items or a proposal collision;
+  - no rows or files left after a refusal or an interrupted import.
 - **Out of scope:** reading any specific legacy format; profiles; importing
   open observations or proposals (D-5).
 - **Open questions:** None
-
-### QS-6. Read Synarchy's `codex-test` registry through the adapter's legacy-history hook
-
-- **Outcome:** Synarchy's ledger holds the registry's runs, observations,
-  assessments and proposals as QS-2 defines them.
-- **Scope:** the Synarchy adapter hook, running the import, and the adapter
-  checks.
-- **Phase:** 2
-- **Depends on:** QS-2, and the legacy registry drained to D-8's bar
-- **Ordering:** not on the shakedown critical path
-- **Relevant decisions:** D-2, D-4, D-5, D-6 (filed in coghex/synarchy), D-8, D-9
-- **Acceptance signals:** imported counts match the registry; a second
-  import changes nothing; the import refuses the store while an item is open;
-  `$test`'s order puts never-tested probes before imported ones (D-4).
-- **Out of scope:** `codex-profile`; assessing open legacy items, which
-  happens before this slice.
-- **Open questions:** None
-
-### QS-3. Shake down every Synarchy suite and repair its adapter
-
-- **Outcome:** a shakedown of Synarchy's applicable suites is clean, or
-  every non-clean suite has a recorded disposition.
-- **Scope:** running QS-1 on Synarchy and adapter fixes in Synarchy.
-- **Phase:** 2
-- **Depends on:** QS-1
-- **Ordering:** critical path
-- **Relevant decisions:** D-1, D-6 (filed in coghex/synarchy), D-7
-- **Acceptance signals:** the shakedown report; the adapter checks pass.
-- **Out of scope:** product fixes to Synarchy tests, which go through
-  `$assess-tests` issues.
-- **Open questions:** None
-
-### QS-4. Size `synarchy-test-headless`'s flake slices from a measured trial
-
-- **Outcome:** the headless suite's `batch_tests` is set from one measured
-  trial's duration, so each flake batch fits its `batch_seconds`. The slice
-  reports the projected seeding time at 10 trials, then stops for the
-  owner's trial-count choice (D-10).
-- **Scope:** measurement, the adapter's slice size, and the recorded owner
-  choice. A per-suite trial count, if chosen, is an engine change filed
-  separately.
-- **Phase:** 2
-- **Depends on:** QS-3
-- **Ordering:** critical path
-- **Relevant decisions:** D-1, D-6 (filed in coghex/synarchy), D-10
-- **Acceptance signals:** the recorded measurement and projection; a slice
-  batch finishing within `batch_seconds`; the owner's trial-count choice
-  recorded.
-- **Out of scope:** splitting the Hspec executable.
-- **Open questions:** Q-6
-
-### QS-5. Seed Synarchy's flake ledger
-
-- **Outcome:** `$flake` reports `no-candidate` for Synarchy on this platform,
-  and every failing or flaky test is assessed.
-- **Scope:** running `$flake` to completion, and `$assess-tests` on its
-  observations.
-- **Phase:** 3
-- **Depends on:** QS-3, QS-4 and its recorded trial-count choice (D-10).
-  Not QS-6: flake selection reads no test-lane history (`select.flake_order`),
-  so the import affects only `$test`.
-- **Ordering:** critical path; last
-- **Relevant decisions:** D-1, D-3, D-6 (filed in coghex/synarchy), D-10
-- **Acceptance signals:** the ledger summary; an approved assessment of every
-  observation.
-- **Out of scope:** fixing flaky tests (`$deflake`).
-- **Open questions:** Q-6
