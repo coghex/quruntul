@@ -34,17 +34,12 @@ in the same commit as any behaviour it describes.
   request without a valid marker counts as unknown origin and is reviewed by
   both. The `kanban:solve` workflow adds the marker; add it yourself when
   opening a pull request any other way.
-- **Standalone documentation** (no code change) is written in the `docs-wip`
-  worktree, found by branch rather than by path:
-
-  ```sh
-  git worktree list --porcelain | awk '/^worktree /{p=substr($0,10)} /^branch refs\/heads\/docs-wip$/{print p}'
-  ```
-
-  It lands on `master` only when the owner asks, through `tools/docs_land.sh`
-  (the `kanban:push-docs` skill; see [tools/README.md](tools/README.md)).
-  Dry-run first and stop on any warning or refusal. Never use this lane for
-  documentation a code change needs.
+- **Documentation** is tracked but never gated on CI or review. Land it on
+  `master` with `docs-push [-m "message"] <paths...>` from any worktree as soon
+  as it is ready, including documentation that goes with a code change: link
+  it from the pull request instead of committing it to the pull request's
+  branch. Markdown that tests read or agents execute is code and goes in the
+  pull request; `docs-push` refuses it and says why.
 - **Merging.** The PR drainer merges a pull request once it carries
   `reviewed:approve` and its `build-test` and `review-approved` checks pass.
   `build-test` requires every leg of the `test` matrix. A push that changes the
