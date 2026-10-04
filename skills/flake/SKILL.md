@@ -94,7 +94,7 @@ seeding a repository's ledger. It runs one trial of every suite that applies on
 this platform (`--target SUITE` for one), launched exactly as a flake batch of
 the whole suite, desktop suites included one at a time, at the upstream head
 only. Each suite is `clean` or reports every problem it shows: `build-failed`,
-`enumeration-failed`, `incomplete`, `failed` or `unreported`. Each suite with a
+`enumeration-failed`, `duplicated`, `incomplete`, `failed` or `unreported`. Each suite with a
 problem becomes one observation for `$assess-tests`. It changes no test's
 status and records nothing about tests or suites, and flake selection never
 reads it, so a failed shakedown does not stop `$flake`. Treat its problems as

@@ -246,7 +246,7 @@ class State:
             else:
                 self.db.execute("INSERT INTO suites(id,document) VALUES(?,?)", (suite["id"], json.dumps(suite, sort_keys=True)))
 
-    def enumerated(self, suite: dict, identity: str, revision: str, paths: list[str], upstream: bool) -> dict:
+    def enumerated(self, suite: dict, identity: str, revision: str, paths: list[str], upstream: bool, excluded: dict[str, int] | None = None) -> dict:
         """Record what the suite contains at a revision. New paths become `new`.
 
         Only an enumeration of the upstream head retires tests that vanished, and
@@ -256,9 +256,12 @@ class State:
         added, retired, revived = [], [], []
         with self.transaction():
             self.declare_suite(suite)
-            present = {f"{suite['id']}::{p}": p for p in paths}
+            excluded = excluded or {}
+            present = {f"{suite['id']}::{p}": p for p in [*paths, *excluded]}
             known = {r["id"]: dict(r) for r in self.db.execute("SELECT * FROM tests WHERE suite=?", (suite["id"],))}
             for test_id, path in present.items():
+                if path in excluded:
+                    continue  # Present, but every column and status event stays untouched.
                 row = known.get(test_id)
                 if row is None:
                     self.db.execute(
@@ -279,7 +282,7 @@ class State:
                 previous = self.db.execute("SELECT identity FROM suites WHERE id=?", (suite["id"],)).fetchone()
                 if previous and previous["identity"] and previous["identity"] != identity:
                     for test_id, row in known.items():
-                        if row["status"] in ("pending", "failing") and test_id in present:
+                        if row["status"] in ("pending", "failing") and test_id in present and row["path"] not in excluded:
                             self._status(test_id, "new", f"suite inputs changed since it was {row['status']}",
                                          {"revision": revision})
                 for test_id, row in known.items():

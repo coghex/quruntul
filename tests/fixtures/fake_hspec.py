@@ -13,7 +13,9 @@ once that example is reported; "interrupt" first sends SIGINT to $FIXTURE_INTERR
 $FAKE_HSPEC_SPEC names another spec file, and $FAKE_HSPEC_RECORD a file that receives the
 argv and the FIXTURE_* environment. QURUNTUL_TRIAL names the trial. It honours --dry-run,
 --match, --format=checks, --failure-report, --fail-on=empty and prints the checks
-formatter's layout.
+formatter's layout. `occurrences` maps paths to lists of passed/failed/pending marks,
+so twins may disagree (dry runs still pass). `no_report` omits the failure file.
+`also_run` prints listed paths despite match selectors, modelling over-selection.
 """
 import json
 import os
@@ -58,14 +60,22 @@ def main(argv):
         os.makedirs(report, exist_ok=True)
     if trial in spec.get("crash_on", []):
         os.kill(os.getpid(), 9)
-    chosen = [p for p in spec["examples"] if not patterns or any(pat in "/" + p + "/" for pat in patterns)]
+    chosen = [p for p in spec["examples"] if not patterns or any(pat in "/" + p + "/" for pat in patterns) or (not dry and p in spec.get("also_run", []))]
     if not chosen:
         print("0 examples, 0 failures")
         return 1
-    failed = [] if dry else [p for p in chosen if trial in spec.get("fail", {}).get(p, [])]
-    pending = set() if dry else set(spec.get("pending", []))
-    previous = []
+    seen, marks = {}, []
     for path in chosen:
+        occurrence = seen.get(path, 0)
+        seen[path] = occurrence + 1
+        overrides = spec.get("occurrences", {}).get(path, [])
+        mark = ("passed" if dry else overrides[occurrence] if occurrence < len(overrides) else
+                "failed" if trial in spec.get("fail", {}).get(path, []) else
+                "pending" if path in spec.get("pending", []) else "passed")
+        marks.append(mark)
+    failed = [p for p, mark in zip(chosen, marks) if mark == "failed"]
+    previous = []
+    for path, outcome in zip(chosen, marks):
         parts = path.split("/")
         groups = parts[:-1]
         shared = 0
@@ -73,7 +83,7 @@ def main(argv):
             shared += 1
         for depth in range(shared, len(groups)):
             print("  " * depth + groups[depth])
-        mark = "✘" if path in failed else "‐" if path in pending else "✔"
+        mark = {"failed": "✘", "pending": "‐", "passed": "✔"}[outcome]
         if not dry and path in spec.get("omit", []):
             continue
         print("  " * len(groups) + parts[-1] + f" [{mark}]")
@@ -93,7 +103,7 @@ def main(argv):
         for path in failed:
             print("  " + path)
     print(f"Finished in 0.0001 seconds\n{len(chosen)} examples, {len(failed)} failures")
-    if report and not spec.get("report_dir"):
+    if report and not spec.get("report_dir") and not spec.get("no_report"):
         paths = ", ".join("([" + ",".join(haskell(g) for g in p.split("/")[:-1]) + "]," + haskell(p.split("/")[-1]) + ")"
                           for p in failed)
         Path(report).write_text("garbled" if spec.get("garble") else
