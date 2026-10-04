@@ -34,7 +34,10 @@ class DuplicateTests(ShakedownFixture):
     def run_record(self, lane="flake"):
         state = self.state()
         try:
-            [run] = state.runs(lane=lane, limit=1)
+            # utc() has second precision; fast CI can insert several runs in one second.
+            # These fixture runs are serial, so insertion order identifies this invocation.
+            row = state.db.execute("SELECT id FROM runs WHERE lane=? ORDER BY rowid DESC LIMIT 1", (lane,)).fetchone()
+            run = state.run(row["id"])
             return run, state.trials(run["id"]), state.results(run["id"])
         finally:
             state.db.close()
