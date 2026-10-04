@@ -45,8 +45,22 @@ because CI can be flaky too.
 
 ## Test status
 
-Every test the adapters enumerate is a row in the ledger, identified as
-`<suite>::<path>`. Its status is one of:
+Every uniquely identified test the adapters enumerate is a row in the ledger,
+identified as `<suite>::<path>`. Hspec full paths printed more than once in an
+enumeration are identity problems: only those paths are excluded from seeding,
+selection, per-trial outcomes and status decisions, in every lane (including
+explicit targets, merged-fix verification and candidate `--ref` runs). Unique
+paths in the same suite continue normally; no synthetic identities are created.
+
+An existing row stays entirely unchanged while its path is duplicated, including
+status, counters, last_seen, metadata, status events and recorded evidence,
+regardless of status. Changed suite inputs do not reset duplicated pending or
+failing rows, and duplicated retired rows do not revive. The path remains present
+for disappearance and shakedown drift checks. Once printed exactly once it is an
+ordinary test again, measured from its current status; once absent from an upstream
+enumeration it retires normally. No earlier verdict or evidence is rewritten.
+
+Its status is one of:
 
 - `new` — enumerated, never measured by a flake batch.
 - `stable` — its flake batch passed every trial. **A stable test stays stable.**
@@ -136,6 +150,13 @@ target is a suite, never a test.
   - `build-failed`: preparation or build failed; the adapter's error and the
     build logs.
   - `enumeration-failed`: listing the tests failed; the reason and the log.
+  - `duplicated`: Hspec enumeration printed a full path more than once; each
+    duplicated path with its count and `enumerate.log`. These examples stay
+    unmeasured until uniquely named. Any failure reported under a duplicated path
+    is explicitly named with its trial log or failure-report evidence, attributed
+    to no ledger test. The trial still runs, including when zero unique paths
+    remain, and unique tests are classified normally. Duplicated paths appear in
+    no other problem kind or `not_passed` list.
   - `incomplete`: the trial did not complete (it crashed, timed out, was
     interrupted, or ended in a harness or setup error). It keeps the process
     outcome, its detail and its log, and lists every test without a result.
@@ -274,8 +295,26 @@ output is read against the suite's enumerated paths, so a line the suite's own
 processes print (a child's diagnostics at column 0, say) is ignored rather than
 read as a group that misnames later examples. A selected test that a completed
 trial never reports is `missing`: it stays unmeasured, and the batch report
-raises a harness observation instead of calling the batch clean. Command
-probes write `quruntul-probe/v1` JSON to `$QURUNTUL_PROBE_RESULT` naming their
+raises a harness observation instead of calling the batch clean.
+
+Every Hspec enumeration detects repeated full paths and their occurrence counts;
+identical example text under different groups remains distinct. Flake records
+these counts in `result.json`, including a successful duplicate-only enumeration
+that ends `nothing-new` with zero eligible tests and no trials. Every flake report
+produced for such a run has a `harness` observation naming each path and count,
+citing `enumerate.log`, and stating that these examples stay unmeasured until
+uniquely named; its `interpretation_status` is never `clean`. An Hspec `$test`
+probe records the counts and enumeration evidence in `result.json` and its report
+facts, and still executes for suite evidence when no eligible tests remain.
+Probe and shakedown whole-suite launches may print twins, but those paths get no
+selected or recorded test result. Any failed occurrence survives a later passing
+occurrence: checks output and failure reports are independent diagnostic evidence,
+even for paths absent from the ledger and when the failure report is missing or
+unreadable. A duplicated path reporting failure is explicitly distinguished from
+one merely duplicated in flake's harness observation, `$test` facts and the
+shakedown's `duplicated` problem, with the relevant trial evidence.
+
+Command probes write `quruntul-probe/v1` JSON to `$QURUNTUL_PROBE_RESULT` naming their
 declared checks.
 
 ## Results and observations
