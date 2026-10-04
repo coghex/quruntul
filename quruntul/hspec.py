@@ -8,6 +8,7 @@ exact path, which is what decides a failure when the two could disagree.
 """
 from __future__ import annotations
 
+from collections import Counter
 import re
 
 PASSED, FAILED, PENDING = "passed", "failed", "pending"
@@ -69,8 +70,8 @@ def enumerate_argv(executable: str, extra: list[str] | None = None) -> list[str]
     return base_argv(executable) + ["--dry-run", *(extra or [])]
 
 
-def parse_checks(text: str, known: set[str] | None = None) -> dict[str, str]:
-    """Map each reported example path ('A/B/example') to passed/failed/pending.
+def check_occurrences(text: str, known: set[str] | None = None) -> list[tuple[str, str]]:
+    """Read every reported occurrence, preserving repeated full paths and their marks.
 
     Group lines carry no mark and set the nesting stack. Lines after the
     formatter's summary (failure details, timing) are ignored. A carriage
@@ -86,7 +87,7 @@ def parse_checks(text: str, known: set[str] | None = None) -> dict[str, str]:
     prefixes = None
     if known is not None:
         prefixes = {path[:index] for path in known for index, char in enumerate(path) if char == "/"}
-    results: dict[str, str] = {}
+    results: list[tuple[str, str]] = []
     stack: list[tuple[int, str]] = []
     for raw in text.splitlines():
         line = raw.rsplit("\r", 1)[-1].rstrip("\n")
@@ -103,15 +104,27 @@ def parse_checks(text: str, known: set[str] | None = None) -> dict[str, str]:
             continue
         stack = nesting
         if match:
-            results[path] = _MARKS[match.group("mark")]
+            results.append((path, _MARKS[match.group("mark")]))
         else:
             stack.append((indent, name))
     return results
 
 
+def parse_checks(text: str, known: set[str] | None = None) -> dict[str, str]:
+    """Map reported paths to their final marks; use occurrences for identity diagnostics."""
+    return dict(check_occurrences(text, known))
+
+
+def enumeration(text: str) -> tuple[list[str], dict[str, int]]:
+    """Eligible unique paths in suite order, and excluded duplicate occurrence counts."""
+    counts = Counter(path for path, _ in check_occurrences(text))
+    return ([path for path, count in counts.items() if count == 1],
+            {path: count for path, count in counts.items() if count > 1})
+
+
 def enumerate_examples(text: str) -> list[str]:
-    """Every example a --dry-run printed, in suite order."""
-    return list(parse_checks(text))
+    """Every example occurrence a --dry-run printed, in suite order."""
+    return [path for path, _ in check_occurrences(text)]
 
 
 def _haskell_string(source: str, index: int) -> tuple[str, int]:

@@ -235,15 +235,16 @@ class Lab:
         artifacts.mkdir(parents=True, exist_ok=True)
         self.log(f"flake {suite.id} ({why}) at {revision[:12]}; evidence: {artifacts}")
         state_name, detail, selected, measured = "blocked", None, [], {}
+        duplicates = {}
         try:
             prepared = self.prepare(adapter, suite, checkout, revision, run_id, owner)
-            paths = self._enumerate(suite, prepared, run_id, owner, artifacts)
-            change = self.state.enumerated(suite.record(), suite.identity, revision, paths, upstream)
+            paths, duplicates = self._enumerate(suite, prepared, run_id, owner, artifacts)
+            change = self.state.enumerated(suite.record(), suite.identity, revision, paths, upstream, duplicates)
             self._seed(suite, change["added"])
-            rows = {r["id"]: r for r in self.state.tests(suite=suite.id)}
+            rows = {r["id"]: r for r in self.state.tests(suite=suite.id) if r["path"] not in duplicates}
             merged = self.merged_fixing()
             if explicit_test:
-                selected = [explicit_test]
+                selected = [explicit_test] if explicit_test in rows else []
             else:
                 order = {f"{suite.id}::{p}": n for n, p in enumerate(paths)}
                 verify = [i for i, r in rows.items() if r["status"] == "fixing" and i in merged]
@@ -256,13 +257,12 @@ class Lab:
             self.state.update_run(run_id, self.state.run(run_id)["document"] | dict(
                 prepared=dict(argv=prepared.argv, cwd=prepared.cwd, provenance=prepared.provenance,
                               wrapper=prepared.wrapper),
-                enumerated=len(paths), added=len(change["added"]), selected=selected))
+                enumerated=len(paths), duplicates=duplicates, added=len(change["added"]), selected=selected))
             if not selected:
                 state_name = "nothing-new"
-                self.state.finish(run_id, "nothing-new", dict(enumerated=len(paths), interpretation="clean"))
                 return dict(outcome="nothing-new", suite=suite.id)
-            whole = len(selected) == len([r for r in rows.values() if r["status"] != "retired"])
-            state_name, detail = self._trials(suite, prepared, run_id, owner, artifacts, selected, trials, whole)
+            whole = not duplicates and len(selected) == len([r for r in rows.values() if r["status"] != "retired"])
+            state_name, detail = self._trials(suite, prepared, run_id, owner, artifacts, selected, trials, whole, duplicates)
             measured = self._decide(suite, run_id, revision, selected, upstream, explicit, trials)
         except LabError as error:
             state_name, detail = "blocked", str(error)
@@ -275,15 +275,19 @@ class Lab:
             counts = dict(Counter(t["state"] for t in self.state.trials(run_id)))
             newly_flaky = [t for t, m in measured.items() if m.get("became") == "flaky"]
             newly_failing = [t for t, m in measured.items() if m.get("became") == "failing"]
-            summary = dict(counts=counts, reason=detail, planned_trials=trials, selected=len(selected),
+            summary = dict(counts=counts, reason=detail, duplicates=duplicates,
+                           duplicate_failures=self._duplicate_failures(run_id),
+                           planned_trials=trials, selected=len(selected),
                            measured=measured, newly_flaky=newly_flaky, newly_failing=newly_failing,
                            interpretation=("blocked" if state_name == "blocked" else
-                                           "observations" if newly_flaky or any(m["failures"] or m.get("missing")
+                                           "observations" if duplicates or newly_flaky or any(m["failures"] or m.get("missing")
                                                                                 for m in measured.values()) else
-                                           "clean" if state_name == "complete" else "inconclusive"))
-            if state_name != "nothing-new":
-                self.state.finish(run_id, state_name, summary)
+                                           "clean" if state_name in ("complete", "nothing-new") else "inconclusive"))
+            self.state.finish(run_id, state_name, summary)
+            if state_name != "nothing-new" or duplicates:
                 self._flake_report(run_id, suite, summary, detail)
+            else:
+                atomic_json(artifacts / "result.json", self.state.run(run_id))
             self.state.release(owner, "suite:" + suite.id)
             if suite.desktop:
                 self.state.release(owner, "desktop")
@@ -293,20 +297,20 @@ class Lab:
                     result=str(artifacts / "result.json"), report=str(artifacts / "report.md"),
                     ledger=str(self.render()))
 
-    def _enumerate(self, suite, prepared, run_id, owner, artifacts) -> list[str]:
+    def _enumerate(self, suite, prepared, run_id, owner, artifacts) -> tuple[list[str], dict[str, int]]:
         if suite.framework in ("command", "exit"):
-            return list(suite.checks)
+            return list(suite.checks), {}
         argv = prepared.wrapper + _launch(prepared, hspec.enumerate_argv(prepared.argv[0], prepared.argv[1:]))
         result = process.run(argv, Path(prepared.cwd), _environment(prepared.environment), artifacts / "enumerate",
                              600, lambda: self.state.run_heartbeat(run_id, owner))
         if result["outcome"] != "passed":
             raise LabError(f"enumeration {result['outcome']}; see {result['log']}")
-        paths = hspec.enumerate_examples(Path(result["log"]).read_text(errors="replace"))
-        if not paths:
+        paths, duplicates = hspec.enumeration(Path(result["log"]).read_text(errors="replace"))
+        if not paths and not duplicates:
             raise LabError(f"enumeration found no examples; see {result['log']}")
-        return paths
+        return paths, duplicates
 
-    def _trials(self, suite, prepared, run_id, owner, artifacts, selected, trials, whole):
+    def _trials(self, suite, prepared, run_id, owner, artifacts, selected, trials, whole, duplicates=None):
         deadline = time.monotonic() + suite.batch_seconds
         paths = [self.state.test(t)["path"] for t in selected]
         state_name, detail = "complete", None
@@ -316,7 +320,7 @@ class Lab:
             result, failure_report, trial = self._run_trial(suite, prepared, run_id, owner, artifacts, number,
                                                             None if whole else paths)
             outcomes = self._outcomes(suite, result, selected, failure_report, Path(trial["prefix"] + ".checks.json"),
-                                      trial)
+                                      trial, duplicates)
             self.state.finish_trial(run_id, number, result, outcomes)
             failed = sum(1 for o in outcomes.values() if o == "failed")
             self.log(f"{suite.id} {number}/{trials}: {result['outcome']}, {failed} failed of {len(selected)} "
@@ -365,18 +369,20 @@ class Lab:
         except Exception as error:
             raise LabError(f"adapter {name} failed for {suite.id}: {type(error).__name__}: {error}") from error
 
-    def _outcomes(self, suite, result, selected, failure_report, checks_path, trial=None) -> dict[str, str]:
+    def _outcomes(self, suite, result, selected, failure_report, checks_path, trial=None, duplicates=None) -> dict[str, str]:
         """Each selected test's outcome in one trial. Absence after a crash is 'incomplete', never 'passed'."""
         by_path = {self.state.test(t)["path"]: t for t in selected}
         outcomes = {}
         if suite.framework == "hspec":
-            known = {t["path"] for t in self.state.tests(suite=suite.id)}
-            reported = hspec.parse_checks(Path(result["log"]).read_text(errors="replace"), known)
+            known = {t["path"] for t in self.state.tests(suite=suite.id)} | set(duplicates or {})
+            text = Path(result["log"]).read_text(errors="replace")
+            reported = hspec.parse_checks(text, known)
+            self._diagnose_duplicates(result, text, known, failure_report, duplicates or {})
             failed = set()
             if failure_report and failure_report.exists():
                 try:
                     failed = set(hspec.parse_failure_report(failure_report.read_text(errors="replace")))
-                except (ValueError, IndexError):
+                except Exception:  # malformed Hspec evidence must not discard readable checks
                     result["failure_report_error"] = "unreadable failure report"
             for path, test_id in by_path.items():
                 seen = reported.get(path)
@@ -418,6 +424,26 @@ class Lab:
                 result["outcome"], result["error"] = "harness-error", f"invalid probe report: {error}"
             return {t: "incomplete" for t in selected}
         return {test_id: checks[path] if checks[path] != "unproven" else "incomplete" for path, test_id in by_path.items()}
+
+    def _diagnose_duplicates(self, result, text, known, failure_report, duplicates):
+        failures = {path: dict(path=path, log=result.get("log"))
+                    for path, mark in hspec.check_occurrences(text, known)
+                    if path in duplicates and mark == "failed"}
+        if failure_report and failure_report.exists():
+            try:
+                failed = hspec.parse_failure_report(failure_report.read_text(errors="replace"))
+            except Exception:  # Hspec's own file may be unreadable or malformed
+                pass  # The lane records malformed evidence; readable checks remain sufficient.
+            else:
+                for path in failed:
+                    if path in duplicates:
+                        failures.setdefault(path, dict(path=path))["failure_report"] = str(failure_report)
+        if failures:
+            result["duplicate_failures"] = list(failures.values())
+
+    def _duplicate_failures(self, run_id):
+        return [dict(failure, trial=trial["number"]) for trial in self.state.trials(run_id)
+                for failure in trial["document"].get("duplicate_failures", [])]
 
     def _seed(self, suite, added: list[str]) -> None:
         """Carry an older lab's verdicts into tests the ledger has only just met.
@@ -490,6 +516,15 @@ class Lab:
         run = self.state.run(run_id)
         artifacts = self.directory / "runs" / run_id
         observations = []
+        if summary["duplicates"]:
+            observations.append(dict(
+                title=f"duplicated Hspec paths in {suite.id}", area=suite.area or suite.id,
+                kind="harness", tests="none",
+                evidence="; ".join(filter(None, [f"`runs/{run_id}/enumerate.log`",
+                                                _duplicate_evidence(summary["duplicate_failures"])])),
+                expected="each example has a unique full path",
+                observed=_duplicate_text(summary["duplicates"], summary["duplicate_failures"]),
+                confidence="high", follow_up="name these examples uniquely before measuring them"))
         failing = sorted(t for t, m in summary["measured"].items() if m.get("consistent"))
         if failing:
             # One observation for the lot: tests that fail every trial of one
@@ -667,7 +702,7 @@ class Lab:
                                      wrapper=prepared.wrapper, launches_executable=prepared.launches_executable)
             stage = "enumeration"
             try:
-                paths = self._enumerate(suite, prepared, run_id, owner, directory)
+                paths, duplicates = self._enumerate(suite, prepared, run_id, owner, directory)
             except LabError as error:
                 log = directory / "enumerate.log"
                 problems.append(dict(kind="enumeration-failed", reason=str(error),
@@ -675,7 +710,11 @@ class Lab:
                 return _headline(entry), False
             # The current enumeration names the tests, whatever the ledger holds.
             tests = {f"{suite.id}::{p}": p for p in paths}
-            entry.update(listed=len(tests), ledger=self._drift(suite, tests))
+            entry.update(listed=len(tests), ledger=self._drift(
+                suite, tests | {f"{suite.id}::{p}": p for p in duplicates}))
+            if duplicates:
+                problems.append(dict(kind="duplicated", tests=[], duplicates=duplicates,
+                                     log=str(directory / "enumerate.log"), failures=[]))
             stage = "trial"
             try:
                 result, failure_report, trial = self._run_trial(suite, prepared, run_id, owner, directory, 1, None,
@@ -685,7 +724,7 @@ class Lab:
                               log=str(prefix) + ".log")
                 outcomes = {t: "incomplete" for t in tests}
             else:
-                outcomes = self._read_outcomes(suite, result, tests, failure_report, trial)
+                outcomes = self._read_outcomes(suite, result, tests, failure_report, trial, duplicates)
             self._record_trial(run_id, number, suite, result, outcomes)
         except KeyboardInterrupt:
             interrupted = True
@@ -701,10 +740,15 @@ class Lab:
                 result["seed"] = (row or {}).get("document", {}).get("seed")
                 outcomes = self._read_outcomes(
                     suite, result, tests, Path(str(prefix) + ".failures") if suite.framework == "hspec" else None,
-                    dict(number=1, prefix=str(prefix), seed=result["seed"]))
+                    dict(number=1, prefix=str(prefix), seed=result["seed"]), duplicates)
                 self._record_trial(run_id, number, suite, result, outcomes)
         row = next(t for t in self.state.trials(run_id) if t["number"] == number)
         recorded = {r["test_id"]: r["outcome"] for r in self.state.results(run_id) if r["number"] == number}
+        for problem in problems:
+            if problem["kind"] == "duplicated":
+                problem["failures"] = row["document"].get("duplicate_failures", [])
+                problem["logs"] = [f[p] for f in problem["failures"]
+                                   for p in ("log", "failure_report") if f.get(p)]
         _classify(entry, row["document"], number, tests, recorded)
         return _headline(entry), interrupted
 
@@ -720,19 +764,19 @@ class Lab:
         live = {r["id"] for r in self.state.tests(suite=suite.id) if r["status"] != "retired"}
         return dict(unrecorded=[t for t in tests if t not in live], unlisted=sorted(live - set(tests)))
 
-    def _read_outcomes(self, suite, result, tests, failure_report, trial) -> dict[str, str]:
+    def _read_outcomes(self, suite, result, tests, failure_report, trial, duplicates=None) -> dict[str, str]:
         """`_shake_outcomes`, with any failure to read kept as this suite's harness error.
 
         The guardian's record of the process stays as it was, beside the error, and no test is given a
         result: the problem stays with this suite and never stops the next.
         """
         try:
-            return self._shake_outcomes(suite, result, tests, failure_report, trial)
+            return self._shake_outcomes(suite, result, tests, failure_report, trial, duplicates)
         except Exception as error:  # an adapter's or a report's malformation is evidence, not a crash
             _broken(result, f"reading the trial's results failed: {type(error).__name__}: {error}")
             return {t: "incomplete" for t in tests}
 
-    def _shake_outcomes(self, suite, result, tests, failure_report, trial) -> dict[str, str]:
+    def _shake_outcomes(self, suite, result, tests, failure_report, trial, duplicates=None) -> dict[str, str]:
         """Each listed test's own result in a shakedown trial, read against the current enumeration.
 
         Native results are kept: passed, failed, pending (Hspec) and unproven (probes). A test with no
@@ -747,9 +791,14 @@ class Lab:
         if suite.framework == "hspec":
             log = Path(result.get("log") or str(trial["prefix"]) + ".log")
             try:
-                found = hspec.parse_checks(log.read_text(errors="replace"), set(by_path)) if log.exists() else {}
+                text = log.read_text(errors="replace") if log.exists() else ""
+                known = set(by_path) | set(duplicates or {})
+                found = hspec.parse_checks(text, known)
+                self._diagnose_duplicates(result, text, known, failure_report, duplicates or {})
             except OSError as error:
                 found = {}
+                self._diagnose_duplicates(result, "", set(by_path) | set(duplicates or {}),
+                                          failure_report, duplicates or {})
                 broken(f"unreadable trial log ({type(error).__name__})")
             if failure_report and failure_report.exists():
                 try:
@@ -938,18 +987,20 @@ class Lab:
         artifacts.mkdir(parents=True, exist_ok=True)
         self.log(f"test {suite.id} ({why}) at {revision[:12]}; evidence: {artifacts}")
         state_name, detail = "blocked", None
+        duplicates = {}
         try:
             prepared = self.prepare(adapter, suite, checkout, revision, run_id, owner)
             if suite.framework == "hspec":
-                paths = self._enumerate(suite, prepared, run_id, owner, artifacts)
-                self.state.enumerated(suite.record(), suite.identity, revision, paths, upstream)
+                paths, duplicates = self._enumerate(suite, prepared, run_id, owner, artifacts)
+                self.state.enumerated(suite.record(), suite.identity, revision, paths, upstream, duplicates)
             else:
                 self.state.enumerated(suite.record(), suite.identity, revision, list(suite.checks), upstream)
-            selected = [r["id"] for r in self.state.tests(suite=suite.id) if r["status"] != "retired"]
+            selected = [r["id"] for r in self.state.tests(suite=suite.id)
+                        if r["status"] != "retired" and r["path"] not in duplicates]
             self.state.update_run(run_id, self.state.run(run_id)["document"] | dict(
                 prepared=dict(argv=prepared.argv, cwd=prepared.cwd, provenance=prepared.provenance,
-                              wrapper=prepared.wrapper), selected=len(selected)))
-            state_name, detail = self._trials(suite, prepared, run_id, owner, artifacts, selected, 1, True)
+                              wrapper=prepared.wrapper), selected=len(selected), duplicates=duplicates))
+            state_name, detail = self._trials(suite, prepared, run_id, owner, artifacts, selected, 1, True, duplicates)
             if upstream:
                 self.state.tested(suite.id, suite.identity)
         except LabError as error:
@@ -962,7 +1013,8 @@ class Lab:
                     self.state.finish_trial(run_id, trial["number"], dict(outcome="interrupted"), {})
             outcomes = Counter(r["outcome"] for r in self.state.results(run_id))
             summary = dict(counts=dict(Counter(t["state"] for t in self.state.trials(run_id))),
-                           tests=dict(outcomes), reason=detail)
+                           tests=dict(outcomes), reason=detail, duplicates=duplicates,
+                           duplicate_failures=self._duplicate_failures(run_id))
             self.state.finish(run_id, state_name, summary)
             self.state.release(owner, "suite:" + suite.id)
             if suite.desktop:
@@ -972,6 +1024,9 @@ class Lab:
                 f"- Probe: `{suite.id}` — {suite.description}",
                 f"- Selected because: {why}; one execution; state {state_name}" + (f" ({detail})" if detail else ""),
                 f"- Test outcomes: {dict(outcomes)}",
+                *(["- " + _duplicate_text(duplicates, summary["duplicate_failures"]),
+                   "- Duplicate evidence: " + str(artifacts / "enumerate.log") + "; " +
+                   _duplicate_evidence(summary["duplicate_failures"])] if duplicates else []),
                 f"- Log: `runs/{run_id}/trial-0001.log`; result: `runs/{run_id}/result.json`",
             ])
             report.write(artifacts / "report.md", report.skeleton(run, self.source(revision, source_ref), facts))
@@ -1067,7 +1122,7 @@ class Lab:
         return found
 
 
-SHAKEDOWN_PROBLEMS = ("build-failed", "enumeration-failed", "incomplete", "failed", "unreported")
+SHAKEDOWN_PROBLEMS = ("build-failed", "enumeration-failed", "duplicated", "incomplete", "failed", "unreported")
 
 
 def _classify(entry: dict, document: dict, number: int, tests: dict, outcomes: dict) -> None:
@@ -1117,6 +1172,8 @@ def _problem_text(problem: dict) -> str:
     kind = problem["kind"]
     if kind in ("build-failed", "enumeration-failed"):
         return _line(problem["reason"])
+    if kind == "duplicated":
+        return _duplicate_text(problem["duplicates"], problem["failures"])
     if kind == "incomplete":
         return (f"the trial ended {problem['outcome']} ({_line(problem['detail'])}); "
                 f"{len(problem['tests'])} listed tests have no result")
@@ -1178,3 +1235,15 @@ def new_owner(lane: str) -> str:
 
 def sha(path: Path) -> str:
     return file_hash(path)
+
+
+def _duplicate_text(duplicates, failures):
+    paths = ", ".join(f"`{path}` (count {count})" for path, count in duplicates.items())
+    failed = ", ".join(f"`{path}`" for path in dict.fromkeys(f["path"] for f in failures))
+    return (f"Duplicated paths: {paths}; these examples stay unmeasured until uniquely named."
+            + (f" Reported failure under duplicated paths: {failed}; attributed to no ledger test." if failed else ""))
+
+
+def _duplicate_evidence(failures):
+    return "; ".join(dict.fromkeys(f"`{f[key]}`" for f in failures
+                                  for key in ("log", "failure_report") if f.get(key)))
