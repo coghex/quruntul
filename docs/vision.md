@@ -124,8 +124,8 @@ and writes the ledger, all or nothing. Matched runs count toward `$test`
 freshness at the suite's current identity, and everything else is archived,
 not dropped (owner decisions D-2, D-4, D-5, D-8 and D-9, 2026-09-30). A
 consumer's legacy workflow and store belong to that consumer, not to
-quruntul's skills (owner decision 2026-10-08; the remaining copies are a known
-gap, see [design §Legacy repositories](design.md#legacy-repositories)). See
+quruntul's skills (owner decision 2026-10-08; see
+[design §Legacy repositories](design.md#legacy-repositories)). See
 [design §Legacy history import](design.md#legacy-history-import).
 
 ## Operation

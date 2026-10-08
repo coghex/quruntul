@@ -565,9 +565,3 @@ its own repository, never in quruntul (owner decision 2026-10-08). `$playtest`
 uses quruntul only for a consumer whose adapter implements `playtest()`.
 `$profile`/`$performance` keep the legacy `codex-profile` coordinator in every
 repository for now.
-
-**Known gap (2026-10-08).** The skills still carry one consumer's preserved
-legacy workflows and routing, which predate this rule:
-`skills/*/references/synarchy*.md`, Synarchy branches in several `SKILL.md`
-files, and `skills/test/scripts/test_coordinator.py`. Removing them is a code
-change through a pull request, which has not been requested.

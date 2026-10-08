@@ -11,8 +11,8 @@ in the same commit as any behaviour it describes.
   migration and a test; never reset a ledger.
 - Keep the engine dependency-free (Python 3.11+ standard library).
 - A consuming repository's specifics belong in its `.quruntul/adapter.py`, not
-  here. Legacy Synarchy workflows stay verbatim under `skills/*/references/`
-  until Synarchy has an adapter.
+  here. A consumer's legacy workflows belong to that consumer, in its own
+  repository, never in quruntul.
 - Run `python3 -m unittest discover -s tests -t .` before committing; tests use
   temporary repositories and never a real compiler, display or network.
 
