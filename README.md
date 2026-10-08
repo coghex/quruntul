@@ -85,14 +85,8 @@ launch it, reporting any suite that fails to build, list its tests, complete
 its trial or report every test, without touching the ledger.
 
 Skills choose by what the checkout contains: with `.quruntul/adapter.py` they use
-quruntul, otherwise Synarchy falls back to its preserved legacy workflow in
-`skills/<name>/references/synarchy.md`. Hetoimasia and Synarchy both commit
-an adapter (added in
-[hetoimasia#322](https://github.com/coghex/hetoimasia/pull/322) and
-[synarchy#2760](https://github.com/coghex/synarchy/pull/2760)); Hetoimasia's
-ledger is seeded, and Synarchy's onboarding is designed in
-[docs/designs/shakedown_synarchy_design.md](docs/designs/shakedown_synarchy_design.md).
-`$playtest` keeps Synarchy on its own harness either way.
+quruntul; without it, they report that the repository has no quruntul adapter and
+stop. `$playtest` additionally requires the adapter's `playtest()` capability.
 
 ## Development
 

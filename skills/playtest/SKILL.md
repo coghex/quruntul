@@ -16,17 +16,12 @@ Run this skill in a **Class B** session (see the `model-classes` skill).
 
 Resolve the Git top level and read its `AGENTS.md`.
 
-- **Synarchy** (whether or not it has a quruntul adapter, until that adapter
-  implements `playtest()`): read [references/synarchy.md](references/synarchy.md)
-  completely and follow it. Its harness (`tools/playtest/`) and fixed player profiles are
-  the working implementation. For `$playtest N`, run it once per iteration
-  under the loop rules in the installed `$test` skill.
 - **`.quruntul/adapter.py` exists:** read the adapter. If it defines no
   `playtest()` capability — true of Hetoimasia today, which has no gameplay yet
   — report that playtesting is not available in this repository and why, and
   stop. When `$test` delegated here, return that answer so it can audit coverage
   instead.
-- **Otherwise:** report that there is no adapter and stop.
+- **Otherwise:** report that the repository has no quruntul adapter and stop.
 
 ## The quruntul contract, for when an adapter adds playtests
 

@@ -32,8 +32,6 @@ probes.
 Resolve the Git top level and read its `AGENTS.md` (or `CLAUDE.md`) first.
 
 - **`.quruntul/adapter.py` exists:** use the quruntul workflow below.
-- **Synarchy** (no adapter yet): read [references/synarchy.md](references/synarchy.md)
-  completely and follow it instead; its census lab is unchanged.
 - **Otherwise:** report that the repository has no quruntul adapter and stop.
   Never guess a lab from similarly named scripts.
 
