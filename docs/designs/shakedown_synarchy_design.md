@@ -7,7 +7,21 @@ adapter launches every suite correctly before an expensive flake batch relies
 on it. It then brings Synarchy onto quruntul: shaken down, carrying its
 valuable `$test` history, and seeded.
 
-Design state: `ready for issue processing`
+> **Superseded in part (owner decision 2026-10-08).** Quruntul stays generic
+> and independently adoptable: it carries no consumer's onboarding plan,
+> selection, budget or special case, and depends on no consumer's progress.
+> What remains in force is the generic mechanics that QS-1 (#6) and QS-2 (#8)
+> delivered, as [the design](../design.md) now states them; the decisions
+> behind them stay here as their rationale. Everything specific to Synarchy is
+> history and is no longer a quruntul plan: the epic contract, the Synarchy
+> evidence and counts, the onboarding steps, D-1's arc, D-2's choice of store,
+> D-6, D-9's target list, D-10, Q-6 and the moved delivery plan. Synarchy owns that work in its
+> own records. Any engine change it needs, such as a per-suite trial count,
+> comes to quruntul as a separate generic request. Nothing below is rewritten;
+> it is kept as the record of 2026-09-30 to 2026-10-02.
+
+Design state: `closed — historical record; do not process` (was `ready for
+issue processing` until 2026-10-08)
 
 Status legend: `[ ]` unprocessed · `[#N]` linked to issue N · `[no-issue]`
 reviewed and deliberately not tracked separately · `[deferred]` blocked on a

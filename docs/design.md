@@ -43,6 +43,24 @@ what a result looks like. The code in `quruntul/` implements it; the skills in
 `$test` never runs a CI test. `$flake` runs everything, CI tests included,
 because CI can be flaky too.
 
+## Check classes
+
+An adapter declares each suite's kind by the work its tests actually do,
+never by the framework or wrapper that launches them (owner decision
+2026-10-08):
+
+- `ci` — finite correctness checks: Hspec assertions, Python checks and other
+  tests that finish in bounded time. They, and the consuming repository's
+  existing gates over them, stay mandatory under that repository's own rules.
+- `probe` — long-running observation, such as a game simulation or a
+  multi-stage campaign. It is optional and local only, and never runs in CI,
+  even when Hspec or Python launches it.
+
+Flake batches, shakedowns and seeding a ledger are advisory stability
+campaigns. None of them is ever a required gate, for a consuming repository's
+delivery or for future quruntul work; each consumer decides whether, when and
+how far to run them.
+
 ## Test status
 
 Every uniquely identified test the adapters enumerate is a row in the ledger,
@@ -204,8 +222,9 @@ target is a suite, never a test.
   (tests the ledger lacks, and ledger tests no longer listed), the report says
   so and nothing is recorded. It writes only its own run, trials, results,
   report and observations, and its claims.
-- **Advisory.** Flake and `$test` selection never read a shakedown's result. Run
-  one after an adapter or harness change and before seeding a repository.
+- **Advisory.** Flake and `$test` selection never read a shakedown's result.
+  Running one after an adapter or harness change, and before seeding a
+  repository, is recommended, never required.
 
 ## Claims
 
@@ -287,6 +306,13 @@ object with:
   for `quruntul import-history` alone (see
   [Legacy history import](#legacy-history-import)). No lane calls it, and an
   adapter without it behaves exactly as before.
+
+Everything project-specific belongs to the adapter or to its repository's own
+policy: which suites exist and their kinds, trial counts (`flake_trials`),
+slice sizes (`batch_tests`), deferrals, refresh windows, desktop consent,
+legacy stores, and whether and when to shake down, import or seed. The engine
+supplies defaults and mechanics, never a consumer-specific selection, budget
+or special case (owner decision 2026-10-08).
 
 For Hspec suites the engine does the rest: enumeration (`--dry-run
 --format=checks`), exact per-test selection (`--match /path/`), per-trial
@@ -531,13 +557,17 @@ reset.
 
 ## Legacy repositories
 
-Synarchy's census-based flake lab and its `codex-test`/`codex-profile`
-coordinators predate this design. A checkout without `.quruntul/adapter.py`
-routes Synarchy to its preserved legacy workflow under
-`skills/<name>/references/synarchy.md`; a checkout with one uses quruntul, with
-the census still authoritative for deferrals and seeding each probe's first
-status through the adapter's `seed` hook. `$playtest` keeps Synarchy on its own
-harness until its adapter implements `playtest()`, and `$assess-tests` still
-drains the legacy `codex-test` registry separately until that registry's closed
-history is imported through `legacy_history`. `$profile`/`$performance`
-keep their `codex-profile` coordinator in every repository for now.
+A repository without `.quruntul/adapter.py` is not a quruntul consumer, and
+any older lab it keeps is its own. A consumer's older workflows and stores
+belong to that consumer: it carries their verdicts and history in through its
+adapter (`seed`, `legacy_history`) and keeps any remaining legacy routine in
+its own repository, never in quruntul (owner decision 2026-10-08). `$playtest`
+uses quruntul only for a consumer whose adapter implements `playtest()`.
+`$profile`/`$performance` keep the legacy `codex-profile` coordinator in every
+repository for now.
+
+**Known gap (2026-10-08).** The skills still carry one consumer's preserved
+legacy workflows and routing, which predate this rule:
+`skills/*/references/synarchy*.md`, Synarchy branches in several `SKILL.md`
+files, and `skills/test/scripts/test_coordinator.py`. Removing them is a code
+change through a pull request, which has not been requested.

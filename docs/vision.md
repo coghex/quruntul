@@ -5,14 +5,16 @@
 and decisions about its audience, agents, profiling, gating and platforms
 (2026-10-01), the contract in [the design](design.md), the
 [working agreements](../AGENTS.md), and the owner decisions recorded in the
-[shakedown and Synarchy design](designs/shakedown_synarchy_design.md).
+[shakedown and legacy-import design record](designs/shakedown_synarchy_design.md).
+It was revised on 2026-10-08 for the owner's decision that the harness stays
+generic and independently adoptable (V-1, V-4, V-8, V-12).
 
 Quruntul holds the testing framework for the owner's other projects. It is one
 local testing lab — a standard-library Python engine and the Codex skills that
 drive it — that measures, observes and diagnoses other repositories' tests. It
-has no product of its own: its value is the evidence it gives the projects it
-serves (today Hetoimasia and Synarchy) about which tests are flaky, which
-probes are due, and what those runs showed.
+has no product of its own: its value is the evidence it gives the projects
+that adopt it about which tests are flaky, which probes are due, and what
+those runs showed.
 
 This document holds the direction: what the lab must stay true to, and where it
 is heading. Concrete, unambiguous rules (statuses, lanes, claims, formats,
@@ -43,6 +45,14 @@ rather than for a public audience, and an adapter that relies on newer engine
 behaviour refuses an older engine through `ctx.version`. See
 [design §Adapter](design.md#adapter) and [AGENTS](../AGENTS.md).
 
+The harness stays generic enough for any of the owner's repositories to adopt
+on its own (owner decision 2026-10-08). Quruntul's engine, skills, docs and
+plans name no consumer-specific selection, budget, special case or onboarding
+step, and depend on no consumer's progress. A consumer's adapter,
+configuration and policy own its suite selections, trial counts, slice sizes,
+deferrals and onboarding, and its own tracker owns that work. Quruntul gains
+only generic mechanics that every consumer can use.
+
 ### V-2. The engine owns mechanics; Codex agents own judgement
 
 Selection, claims, pinned checkouts, process lifetime, recording and validation
@@ -70,7 +80,9 @@ Quruntul reports evidence, files issues on the owner's approval, and opens fix
 pull requests under the consuming repository's delivery rules. It never gates a
 consuming repository's CI or merges: no status, observation or missing
 measurement blocks a consumer's delivery, whose rules stay its own (owner
-decision 2026-10-01).
+decision 2026-10-01). Flake, shakedown and seeding campaigns are advisory
+stability work: never a required gate for a consumer or for future harness
+work (owner decision 2026-10-08).
 
 ## Evidence and the ledger
 
@@ -108,9 +120,10 @@ assessed observations, approved assessments and decided proposals, never open
 work. The adapter reads its own legacy store, and the engine alone validates
 and writes the ledger, all or nothing. Matched runs count toward `$test`
 freshness at the suite's current identity, and everything else is archived,
-not dropped (owner decisions D-2, D-4, D-5, D-8 and D-9, 2026-09-30). Until a
-consumer is onboarded, its legacy workflow stays verbatim under
-`skills/*/references/`. See
+not dropped (owner decisions D-2, D-4, D-5, D-8 and D-9, 2026-09-30). A
+consumer's legacy workflow and store belong to that consumer, not to
+quruntul's skills (owner decision 2026-10-08; the remaining copies are a known
+gap, see [design §Legacy repositories](design.md#legacy-repositories)). See
 [design §Legacy history import](design.md#legacy-history-import).
 
 ## Operation
@@ -140,24 +153,35 @@ applies to. The owner's projects balance coverage against efficiency by
 validating locally on macOS and in GitHub CI on Linux (owner decision
 2026-10-01).
 
+### V-12. Checks are classified by the work they actually do
+
+Finite correctness checks (Hspec assertions, Python checks) and their existing
+gates are mandatory. Long game simulations and campaign probes are optional,
+local only and never CI, even when Hspec or Python launches them. The class
+follows the actual work, never the wrapper's name or framework (owner decision
+2026-10-08). Quruntul stays useful for both: running mandatory correctness
+checks, and optional local experiments. See
+[design §Check classes](design.md#check-classes).
+
 ## Status of the lanes
 
 **Built and in use:** the flake, shakedown, deflake, test and assess lanes, the
-proposal lane, legacy history import, and Hetoimasia's adapter and seeded
-ledger.
+proposal lane, legacy history import, and duplicate Hspec path detection.
 
-**Planned now (epic #5, owner decision D-1, 2026-09-30):** bringing Synarchy
-onto quruntul — shaking down and repairing its adapter, importing its
-`codex-test` history, sizing its headless suite, then seeding its ledger. Those
-slices are tracked in coghex/synarchy (D-6).
+**Consumer onboarding is the consumer's work (owner decision 2026-10-08):**
+shaking down a repository's adapter, importing its legacy history, sizing its
+suites and seeding its ledger are planned and tracked by that repository,
+using these generic lanes. Epic #5 delivered the generic mechanics (the
+shakedown lane and the legacy history import) and plans no consumer's
+onboarding.
 
 **Planned later (owner decision 2026-10-01):** `$profile` and `$performance`
-become engine lanes after Synarchy's onboarding. Until then they keep the
-legacy `codex-profile` coordinator as a temporary holdover, which is not a
-defect.
+become engine lanes. No consumer's onboarding is a prerequisite (2026-10-08).
+Until then they keep the legacy `codex-profile` coordinator as a temporary
+holdover, which is not a defect.
 
-**Deliberately deferred:** `$playtest` keeps Synarchy on its own harness until
-its adapter implements `playtest()`.
+**Deliberately deferred:** `$playtest` runs through quruntul only for a
+consumer whose adapter implements `playtest()`.
 
 ## Continuing after a context reset
 
