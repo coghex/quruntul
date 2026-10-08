@@ -16,15 +16,8 @@ Run this skill in a **Class A** session (see the `model-classes` skill).
 
 Resolve the Git top level and read its `AGENTS.md` completely.
 
-- **`.quruntul/adapter.py` exists:** use the quruntul workflow below. In
-  Synarchy, older `$test`/`$playtest` reports also sit in the legacy
-  `codex-test` registry: when that registry still lists unassessed observations,
-  assess them with [references/synarchy.md](references/synarchy.md) in a
-  separate invocation, never mixed into a quruntul assessment.
-- **Synarchy:** read [references/synarchy.md](references/synarchy.md) completely
-  and follow it. It uses the `codex-test` coordinators in this skill's
-  `scripts/`.
-- **Otherwise:** report that there is no adapter and stop.
+- **`.quruntul/adapter.py` exists:** use the quruntul workflow below.
+- **Otherwise:** report that the repository has no quruntul adapter and stop.
 
 ## Parse the invocation
 

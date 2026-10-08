@@ -18,8 +18,6 @@ Its build, test, platform, desktop and **delivery** rules govern everything
 below.
 
 - **`.quruntul/adapter.py` exists:** use the quruntul workflow below.
-- **Synarchy:** read [references/synarchy.md](references/synarchy.md) and follow
-  that diagnosis workflow; Synarchy's census has no fix-and-PR lane yet.
 - **Otherwise:** report that the repository has no quruntul adapter and stop.
 
 ## Parse the argument

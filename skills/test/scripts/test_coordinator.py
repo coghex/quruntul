@@ -37,7 +37,6 @@ DEFAULT_STALE_SECONDS = 6 * 60 * 60
 DEFAULT_VALUE_WINDOW = 8
 DEFAULT_VALUE_MIN_COMPLETED = 6
 DEFAULT_VALUE_MAX_OBSERVATION_RATE = 0.25
-SYNARCHY_PROBE_OUTER_TIMEOUT = 7200.0
 
 
 class CoordinatorError(RuntimeError):
@@ -223,86 +222,6 @@ def command_after_separator(values: list[str]) -> list[str]:
     if not values:
         raise CoordinatorError("claim requires a command after --")
     return values
-
-
-def direct_probe_script(command: list[str]) -> str | None:
-    """The basename of a directly invoked ``tools/*_probe.py``, if any."""
-    candidates = command[1:] if Path(command[0]).name.startswith("python") else command[:1]
-    for token in candidates:
-        path = Path(token)
-        if len(path.parts) >= 2 and path.parts[-2] == "tools" and path.name.endswith("_probe.py"):
-            return path.name
-    return None
-
-
-def parse_probe_inventory(output: str) -> dict[str, str]:
-    """Map a Synarchy ``run_probes.py --list`` script column to its key."""
-    inventory: dict[str, str] = {}
-    for line in output.splitlines():
-        columns = line.split(maxsplit=2)
-        if len(columns) >= 2 and columns[1].endswith("_probe.py"):
-            inventory[columns[1]] = columns[0]
-    return inventory
-
-
-def require_synarchy_probe_runner(base_worktree: Path, command: list[str], *, run=None) -> None:
-    """Reject a registered Synarchy probe claimed through its direct fallback.
-
-    The direct path launches ``cabal run`` inside the engine READY timeout and
-    outside Synarchy's cross-process ``cabal-build`` lock.  The aggregate
-    runner prebuilds under that lock and injects the resolved executable.
-    """
-    script = direct_probe_script(command)
-    runner_path = base_worktree / "tools" / "run_probes.py"
-    if script is None or not (base_worktree / "synarchy.cabal").is_file() or not runner_path.is_file():
-        return
-    subprocess_runner = subprocess.run if run is None else run
-    try:
-        listed = subprocess_runner(
-            [sys.executable, str(runner_path), "--list"],
-            cwd=base_worktree,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=15,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise CoordinatorError(
-            f"could not inspect Synarchy's registered probe inventory: {error}"
-        ) from None
-    if listed.returncode != 0:
-        detail = (listed.stderr or listed.stdout).strip()
-        raise CoordinatorError(
-            "could not inspect Synarchy's registered probe inventory"
-            + (f": {detail}" if detail else "")
-        )
-    key = parse_probe_inventory(listed.stdout).get(script)
-    if key is None:
-        return
-    raise CoordinatorError(
-        f"registered Synarchy probe {key!r} must use the coordinated runner; "
-        f"claim `python3 tools/run_probes.py --only {key} --exact --jobs 1` "
-        "instead of invoking its script directly, so Cabal prebuilds under "
-        "the cross-process lock before the engine READY timer starts"
-    )
-
-
-def require_synarchy_probe_timeout(
-    worktree: Path, command: list[str], timeout: float | None
-) -> None:
-    """Reserve enough outer time for lock wait, preflight, and one probe."""
-    is_synarchy = (worktree / "synarchy.cabal").is_file()
-    uses_runner = any(Path(token).name == "run_probes.py" for token in command)
-    if not is_synarchy or not uses_runner:
-        return
-    if timeout is not None and timeout >= SYNARCHY_PROBE_OUTER_TIMEOUT:
-        return
-    raise CoordinatorError(
-        "a coordinated Synarchy probe requires "
-        f"`test_coordinator.py run --timeout {SYNARCHY_PROBE_OUTER_TIMEOUT:.0f}` "
-        "or longer so cross-process lock wait and Cabal preflight do not "
-        "consume the probe's execution budget"
-    )
 
 
 def default_base_ref(repo: Path) -> str:
@@ -704,7 +623,6 @@ def cmd_claim(args: argparse.Namespace) -> int:
         raise CoordinatorError("--ci-evidence must not be empty")
     with locked_registry(repo) as (registry, paths):
         snapshot = find_snapshot(registry, args.snapshot_id)
-        require_synarchy_probe_runner(Path(snapshot["base_worktree_path"]), command)
         reap_stale(registry, args.stale_seconds)
         run_conflict = next(
             (
@@ -844,7 +762,6 @@ def cmd_run(args: argparse.Namespace) -> int:
     command = original.get("command")
     if not isinstance(command, list) or not command:
         raise CoordinatorError("claimed command is missing")
-    require_synarchy_probe_timeout(worktree, command, args.timeout)
     log_path = Path(original["log_path"])
     log_path.parent.mkdir(parents=True, exist_ok=True)
     record_update(

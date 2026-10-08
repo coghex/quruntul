@@ -152,65 +152,6 @@ class ValueStatusTests(unittest.TestCase):
         self.assertEqual(summary["signal"], "apparatus-friction")
 
 
-class SynarchyProbeCommandTests(unittest.TestCase):
-    def make_synarchy(self, root: Path) -> None:
-        (root / "synarchy.cabal").write_text("name: synarchy\n", encoding="utf-8")
-        tools = root / "tools"
-        tools.mkdir()
-        (tools / "run_probes.py").write_text(
-            "print('meal_waste meal_waste_probe.py policy')\n",
-            encoding="utf-8",
-        )
-
-    def test_registered_probe_direct_command_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            self.make_synarchy(root)
-            with self.assertRaisesRegex(
-                COORDINATOR.CoordinatorError,
-                r"run_probes\.py --only meal_waste --exact --jobs 1",
-            ):
-                COORDINATOR.require_synarchy_probe_runner(
-                    root,
-                    ["python3", "tools/meal_waste_probe.py", "--port", "9824"],
-                )
-
-    def test_registered_probe_runner_command_is_accepted(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            self.make_synarchy(root)
-            COORDINATOR.require_synarchy_probe_runner(
-                root,
-                [
-                    "python3",
-                    "tools/run_probes.py",
-                    "--only",
-                    "meal_waste",
-                    "--exact",
-                    "--jobs",
-                    "1",
-                ],
-            )
-
-    def test_unregistered_disposable_probe_remains_eligible(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            self.make_synarchy(root)
-            COORDINATOR.require_synarchy_probe_runner(
-                root,
-                ["python3", "tools/disposable_probe.py"],
-            )
-
-    def test_runner_requires_large_outer_coordinator_budget(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            self.make_synarchy(root)
-            command = ["python3", "tools/run_probes.py", "--only", "meal_waste"]
-            with self.assertRaisesRegex(COORDINATOR.CoordinatorError, r"--timeout 7200"):
-                COORDINATOR.require_synarchy_probe_timeout(root, command, 600)
-            COORDINATOR.require_synarchy_probe_timeout(root, command, 7200)
-
-
 class ReportValidationTests(unittest.TestCase):
     def validate(self, outcome: str, observation: bool) -> list[str]:
         record = report_record()

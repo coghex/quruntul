@@ -18,11 +18,6 @@ Its workers inherit this session's class, so they run on Class B too.
 Resolve the Git top level and read its `AGENTS.md` (or `CLAUDE.md`) completely.
 
 - **`.quruntul/adapter.py` exists:** use the quruntul workflow below.
-- **Synarchy:** read [references/synarchy.md](references/synarchy.md) completely
-  and follow it for each iteration. Its coordinator is in this skill's
-  `scripts/`. For `$test N` in Synarchy, run that workflow once per iteration
-  under the loop rules below; they replace the old `$autotest`, whose text is
-  kept in [references/synarchy-autotest.md](references/synarchy-autotest.md).
 - **Otherwise:** report that the repository has no quruntul adapter and stop.
 
 `quruntul` must be on `PATH`; if it isn't, report that and stop.

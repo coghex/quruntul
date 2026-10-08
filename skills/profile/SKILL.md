@@ -88,8 +88,7 @@ reset, clean, deletion, rebase, or local commit.
 
 Read the target snapshot's `AGENTS.md`, project instructions, build policy,
 existing benchmark/profiling apparatus, and relevant historical measurements.
-For Synarchy, read [references/synarchy-workloads.md](references/synarchy-workloads.md)
-completely before selecting commands. For Hetoimasia, read
+For Hetoimasia, read
 [references/hetoimasia.md](references/hetoimasia.md) completely.
 
 ## 2. Select one performance question
