@@ -4,8 +4,10 @@
 `$guide` reviews against. It was drafted from the owner's statement of purpose
 and decisions about its audience, agents, profiling, gating and platforms
 (2026-10-01), the contract in [the design](design.md), the
-[working agreements](../AGENTS.md), and the owner decisions recorded in the
-[shakedown and legacy-import design record](designs/shakedown_synarchy_design.md).
+[working agreements](../AGENTS.md), and the owner decisions of 2026-09-30
+(D-1 to D-18) in the shakedown and legacy-import design record. That record
+was removed from this tree on 2026-10-08 and stays in this repository's
+history (commits `e4696b8`, `0a9db4c`, `0a1c7e3`, `aea8e06`).
 It was revised on 2026-10-08 for the owner's decision that the harness stays
 generic and independently adoptable (V-1, V-4, V-8, V-12).
 
