@@ -27,15 +27,16 @@ to commit `.quruntul/adapter.py` (Synarchy and Hetoimasia do, for example).
 `$profile` and `$performance` work in any repository. A typical order:
 
 1. **Check the adapter (recommended).** After an adapter or harness change, and
-   before seeding a ledger, `quruntul shakedown` runs one trial of every suite and
-   reports any that fail to build, list or finish. It's advisory: it changes no
+   before seeding a ledger, `quruntul shakedown` runs one trial of every suite that
+   applies on this platform and reports any that fail to build, list or finish. It's advisory: it changes no
    status, and measuring doesn't wait on it.
 2. **Measure flakiness.** `$flake 10` measures ten suites that still have
    never-measured tests. `quruntul status` shows where the ledger stands.
 3. **Act on the results.** `$deflake` takes the worst unclaimed `flaky` test and
    opens a PR with before/after evidence. A test that fails every trial is
-   `failing`, not flaky: take it to `$assess-tests`. If a test the ledger calls
-   stable fails in CI, run `quruntul mark TEST --status flaky --reason "failed in CI" --evidence URL`.
+   `failing`, not flaky: take it to `$assess-tests`. Only the owner moves a stable
+   test back to flaky after it fails in CI, or an agent does it when the owner asks:
+   `quruntul mark TEST --status flaky --reason "failed in CI" --evidence URL`.
 4. **Run the local-only probes.** `$test` runs the next due probe; `$playtest`
    runs a naive-player session where the adapter offers one. Each run leaves a
    report whose `OBS-nnn` observations wait for assessment.
