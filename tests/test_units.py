@@ -12,7 +12,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from quruntul import hspec, report, select  # noqa: E402
-from quruntul.adapter import Suite  # noqa: E402
+from quruntul.adapter import Context, Suite  # noqa: E402
 from quruntul.common import LabError  # noqa: E402
 from quruntul.state import State  # noqa: E402
 
@@ -48,6 +48,9 @@ class RtsSuiteValidationTests(unittest.TestCase):
         for declaration in ([0], [-1], [1, 1], [True], "1,4", None):
             with self.subTest(declaration=declaration), self.assertRaises(LabError):
                 suite(rts_capabilities=declaration)
+
+    def test_context_reports_engine_version_050(self):
+        self.assertEqual(Context(Path("."), "revision", None, None).version, (0, 5, 0))
 
 
 class HspecTests(unittest.TestCase):
@@ -235,16 +238,34 @@ class LedgerTests(unittest.TestCase):
         s = suite().record()
         self.state.enumerated(s, "default-input", "r1", ["A/one"], True)
         default_id = self.state.test_id("unit", "A/one")
-        self.state.set_status(default_id, "stable", "default verdict")
+        self.state.set_status(default_id, "failing", "all trials failed")
         one_id = self.state.test_id("unit", "A/one", 1)
+        four_id = self.state.test_id("unit", "A/one", 4)
         self.state.enumerated(s, "input-1", "r1", ["A/one"], True, rts_capabilities=1)
         self.state.set_status(one_id, "failing", "all trials failed")
+        self.state.enumerated(s, "four-input-1", "r1", ["A/one"], True, rts_capabilities=4)
+        self.state.set_status(four_id, "failing", "all trials failed")
+
+        # Change the default after both settings have independent verdicts.
+        self.state.enumerated(s, "default-input-2", "r2", ["A/one"], True)
+        self.assertEqual(self.state.test(default_id)["status"], "new")
+        self.assertEqual(self.state.test(one_id)["status"], "failing")
+        self.assertEqual(self.state.test(four_id)["status"], "failing")
+
+        # Then change -N1 while -N4 and the default retain their evidence.
         self.state.enumerated(s, "input-2", "r2", ["A/one"], True, rts_capabilities=1)
         self.assertEqual(self.state.test(one_id)["status"], "new")
+        self.assertEqual(self.state.test(default_id)["status"], "new")
+        self.assertEqual(self.state.test(four_id)["status"], "failing")
         self.state.set_status(one_id, "flaky", "one trial failed")
         self.state.enumerated(s, "input-2", "r2", [], True, excluded={"A/one": 2}, rts_capabilities=1)
         self.assertEqual(self.state.test(one_id)["status"], "flaky")
-        self.assertEqual(self.state.test(default_id)["status"], "stable")
+
+        # Finally change -N4; -N1's duplicate enumeration must not rewrite it.
+        self.state.enumerated(s, "four-input-2", "r2", ["A/one"], True, rts_capabilities=4)
+        self.assertEqual(self.state.test(four_id)["status"], "new")
+        self.assertEqual(self.state.test(one_id)["status"], "flaky")
+        self.assertEqual(self.state.test(default_id)["status"], "new")
 
     def test_test_ids_refuse_a_collision_with_a_valid_default_path(self):
         s = suite().record()

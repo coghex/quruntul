@@ -230,8 +230,12 @@ class Lab:
                 outcome["skipped"] = skipped
                 return outcome
             skipped[suite.id] = "enumerated; no new tests"
-        return dict(outcome="no-candidate", revision=revision, skipped=skipped,
-                    status=self.counts(), next_step="Every enumerated test has been measured; nothing new to flake.")
+        result = dict(outcome="no-candidate", revision=revision, skipped=skipped,
+                      status=self.counts(), next_step="Every enumerated test has been measured; nothing new to flake.")
+        settings = self.setting_counts()
+        if settings:
+            result["rts_settings"] = settings
+        return result
 
     def merged_fixing(self) -> set[str]:
         merged = set()
@@ -1115,16 +1119,29 @@ class Lab:
     # -- views ----------------------------------------------------------------
 
     def counts(self) -> dict:
-        return dict(Counter(r["status"] for r in self.state.tests()))
+        return dict(Counter(r["status"] for r in self.state.tests() if r.get("rts_capabilities") is None))
+
+    def setting_counts(self) -> dict:
+        counts = {}
+        for row in self.state.tests():
+            count = row.get("rts_capabilities")
+            if count is None:
+                continue
+            counts.setdefault(f"-N{count}", Counter())[row["status"]] += 1
+        return {setting: dict(statuses) for setting, statuses in sorted(counts.items())}
 
     def render(self) -> Path:
         """ledger.md: a regenerated view of the ledger for humans. Never an input."""
         tests = self.state.tests()
         by_suite: dict[str, Counter] = {}
         for row in tests:
+            if row.get("rts_capabilities") is not None:
+                continue
             by_suite.setdefault(row["suite"], Counter())[row["status"]] += 1
+        default_tests = [row for row in tests if row.get("rts_capabilities") is None]
+        setting_tests = [row for row in tests if row.get("rts_capabilities") is not None]
         lines = ["# Quruntul ledger", "", f"Generated {utc()} from ledger.sqlite3. Do not edit.", "",
-                 f"Tests: {dict(Counter(r['status'] for r in tests))}", "", "## Suites", "",
+                 f"Tests: {dict(Counter(r['status'] for r in default_tests))}", "", "## Suites", "",
                  "| Suite | new | stable | flaky | failing | fixing | pending | retired | enumerated | last probe run |",
                  "|---|---|---|---|---|---|---|---|---|---|"]
         for suite in self.state.suites():
@@ -1132,15 +1149,16 @@ class Lab:
             lines.append(f"| {suite['id']} | {c['new']} | {c['stable']} | {c['flaky']} | {c['failing']} | {c['fixing']} | "
                          f"{c['pending']} | {c['retired']} | {suite['enumerated'] or '—'} | "
                          f"{suite['last_test_run'] or '—'} |")
-        lines += ["", "## Tests by setting", "", "| Test | RTS setting | Status | Failures / trials |",
-                  "|---|---|---|---|"]
-        for row in tests:
-            setting = f"-N{row['rts_capabilities']}" if row.get("rts_capabilities") is not None else "default"
-            lines.append(f"| `{row['id']}` | {setting} | {row['status']} | {row['failures']}/{row['trials']} |")
+        if setting_tests:
+            lines += ["", "## RTS settings", "", "| Test | Path | Setting | Status | Failures / trials |",
+                      "|---|---|---|---|---|"]
+            for row in setting_tests:
+                lines.append(f"| `{row['id']}` | `{row['path']}` | -N{row['rts_capabilities']} | "
+                             f"{row['status']} | {row['failures']}/{row['trials']} |")
         lines += ["", "## Flaky, failing and fixing", "", "| Test | Status | Failures / trials | Last failure | PR |",
                   "|---|---|---|---|---|"]
         for row in tests:
-            if row["status"] in ("flaky", "failing", "fixing"):
+            if row.get("rts_capabilities") is None and row["status"] in ("flaky", "failing", "fixing"):
                 lines.append(f"| {row['id']} | {row['status']} | {row['failures']}/{row['trials']} | "
                              f"{row['last_failure'] or '—'} | {row['pr'] or '—'} |")
         lines += ["", "## Recent runs", "", "| Run | Lane | Suite | Started | State | Revision |",
@@ -1164,7 +1182,7 @@ class Lab:
 
     def status(self) -> dict:
         self.recover()
-        return dict(ledger=str(self.render()), directory=str(self.directory), tests=self.counts(),
+        result = dict(ledger=str(self.render()), directory=str(self.directory), tests=self.counts(),
                     suites=len(self.state.suites()), active_runs=[
                         dict(id=r["id"], lane=r["lane"], suite=r["suite"], started=r["started"])
                         for r in self.state.runs(active=True)],
@@ -1173,6 +1191,10 @@ class Lab:
                     proposals=[dict(id=p["id"], target=p["target_id"], status=p["status"])
                                for p in self.state.proposals() if p["status"] in ("pending", "accepted")],
                     deferrals=self.state.deferred())
+        settings = self.setting_counts()
+        if settings:
+            result["rts_settings"] = settings
+        return result
 
     def checkouts(self) -> list[dict]:
         base = self.common.parent.parent / f".{self.common.parent.name}-quruntul"

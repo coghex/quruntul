@@ -16,13 +16,17 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
 from quruntul import cli  # noqa: E402
+from quruntul.common import LabError  # noqa: E402
+from quruntul.lab import Lab  # noqa: E402
 
 ADAPTER = '''
 import hashlib, sys
@@ -51,7 +55,8 @@ class Fixture:
             exe = str(ctx.checkout / "fake_hspec.py")
             return ctx.Prepared(argv=[exe], cwd=str(ctx.checkout),
                                 environment={"FAKE_HSPEC_RECORD": str(ctx.artifacts / "fake-hspec-record.json")},
-                                provenance=dict(executable_sha256=hashlib.sha256(Path(exe).read_bytes()).hexdigest()))
+                                provenance=dict(executable_sha256=hashlib.sha256(Path(exe).read_bytes()).hexdigest(),
+                                                engine_version=ctx.version))
         return ctx.Prepared(argv=[sys.executable, str(ctx.checkout / "probe.py")], cwd=str(ctx.checkout), environment={})
 
 def adapter():
@@ -116,6 +121,136 @@ class LabFixture(unittest.TestCase):
 
 
 class LabTests(LabFixture):
+    def test_setting_batch_claim_is_busy_across_settings_but_not_other_suites(self):
+        self.cli("status")
+        lab = Lab(self.work, log=lambda _: None)
+        entered, release = threading.Event(), threading.Event()
+
+        def hold_trial(*args, **kwargs):
+            entered.set()
+            if not release.wait(30):
+                raise AssertionError("test did not release the held flake batch")
+            raise LabError("released after checking suite claim contention")
+
+        def run_holder():
+            worker_lab = Lab(self.work, log=lambda _: None)
+            with patch.object(worker_lab, "_run_trial", side_effect=hold_trial):
+                worker_lab.flake("setting-holder", "unit", trials=1, rts_capabilities=1)
+
+        worker = threading.Thread(target=run_holder)
+        worker.start()
+        self.assertTrue(entered.wait(30), "setting batch never reached its claimed trial")
+        try:
+            before_runs = len(lab.state.runs(limit=1000))
+            before_trials = lab.state.db.execute("SELECT COUNT(*) FROM trials").fetchone()[0]
+            before_builds = len(list((lab.directory / "runs").glob("*/build.log")))
+            for setting in ("4", "1", None):
+                args = ["--target", "unit"]
+                if setting is not None:
+                    args += ["--rts-capabilities", setting]
+                busy = self.cli("flake", *args, "--trials", "1")
+                self.assertEqual((busy["outcome"], busy["holder"]), ("busy", "setting-holder"))
+                self.assertEqual(len(lab.state.runs(limit=1000)), before_runs)
+                self.assertEqual(lab.state.db.execute("SELECT COUNT(*) FROM trials").fetchone()[0], before_trials)
+                self.assertEqual(len(list((lab.directory / "runs").glob("*/build.log"))), before_builds)
+            different = self.cli("flake", "--target", "probe-a", "--trials", "1")
+            self.assertEqual((different["outcome"], different["suite"]), ("complete", "probe-a"))
+            self.assertEqual(lab.state.held("suite:unit")["owner"], "setting-holder")
+        finally:
+            release.set()
+            worker.join(30)
+        self.assertFalse(worker.is_alive(), "held flake batch did not finish")
+
+    def test_setting_first_keeps_default_flake_eligibility(self):
+        setting = self.cli("flake", "--target", "unit", "--rts-capabilities", "1", "--trials", "1")
+        document = self.cli("show", setting["run_id"])["document"]
+        self.assertEqual(document["rts_capabilities"], 1)
+        self.assertEqual(document["prepared"]["provenance"]["engine_version"], [0, 5, 0])
+        automatic = self.cli("flake", "--trials", "1")
+        self.assertEqual((automatic["suite"], automatic["summary"]["selected"]), ("unit", 3))
+        self.assertEqual(set(automatic["summary"]["measured"]),
+                         {"unit::A/one", "unit::A/two", "unit::B/three"})
+        self.assertTrue(all(row.get("rts_capabilities") is None for row in self.cli("tests")
+                            if row["id"].startswith("unit::") and "::rts-" not in row["id"]))
+
+    def test_default_flake_seeding_and_argv_match_without_rts_declaration(self):
+        adapter = (self.work / ".quruntul" / "adapter.py").read_text()
+        adapter = adapter.replace(
+            "    def prepare(self, ctx, suite):",
+            "    def seed(self, ctx, suite, trial):\n"
+            "        return {\"A/one\": dict(status=\"stable\", reason=\"fixture seed\", evidence={\"source\": \"seed.json\"})} if (ctx.checkout / \"seed.json\").exists() else {}\n\n"
+            "    def prepare(self, ctx, suite):",
+        )
+        (self.work / ".quruntul" / "adapter.py").write_text(adapter)
+        (self.work / "seed.json").write_text("fixture seed enabled")
+        git(self.work, "add", "seed.json")
+        git(self.work, "commit", "-qam", "enable fixture seed")
+        git(self.work, "push", "-q", "origin", "master")
+
+        base = Path(self.temp.name)
+        plain_work = base / "plain-work"
+        subprocess.run(["git", "clone", "-q", str(self.work), str(plain_work)], check=True)
+        plain_adapter = (plain_work / ".quruntul" / "adapter.py").read_text()
+        (plain_work / ".quruntul" / "adapter.py").write_text(
+            plain_adapter.replace("rts_capabilities=[1, 4]", ""))
+        git(plain_work, "config", "user.email", "t@example.com")
+        git(plain_work, "config", "user.name", "t")
+        git(plain_work, "commit", "-qam", "remove RTS declaration")
+        plain_origin = base / "plain-origin.git"
+        subprocess.run(["git", "clone", "-q", "--bare", str(plain_work), str(plain_origin)], check=True)
+        git(plain_work, "remote", "set-url", "origin", str(plain_origin))
+
+        def run_flake(repo):
+            out, err = io.StringIO(), io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                result = cli.main(["--repo", str(repo), "flake", "--trials", "1"])
+            self.assertEqual(result, 0, err.getvalue() + out.getvalue())
+            return json.loads(out.getvalue())
+
+        def run_json(repo, *args):
+            out, err = io.StringIO(), io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                result = cli.main(["--repo", str(repo), *args])
+            self.assertEqual(result, 0, err.getvalue() + out.getvalue())
+            return json.loads(out.getvalue())
+
+        declared, undeclared = run_flake(self.work), run_flake(plain_work)
+        self.assertEqual(declared["summary"]["selected"], undeclared["summary"]["selected"])
+        self.assertEqual(set(declared["summary"]["measured"]), set(undeclared["summary"]["measured"]))
+        for result, repo in ((declared, self.work), (undeclared, plain_work)):
+            tests = run_json(repo, "tests")
+            self.assertEqual(set(result["summary"]["measured"]), {t["id"] for t in tests if t["trials"]})
+            self.assertEqual([t["id"] for t in tests if t["status"] == "stable"],
+                             ["unit::A/one", "unit::A/two", "unit::B/three"])
+            seeded = next(t for t in tests if t["id"] == "unit::A/one")
+            self.assertEqual(seeded["trials"], 0)
+            lab = Lab(repo, log=lambda _: None)
+            self.assertTrue(any(e["kind"] == "status" and e["document"]["reason"].startswith("seeded:")
+                                for e in lab.state.events("unit::A/one")))
+            run = run_json(repo, "show", result["run_id"])
+            command = run["trials"][-1]["document"]["command"]
+            command[0] = Path(command[0]).name
+            command = ["<failure-report>" if arg.startswith("--failure-report=") else
+                       "<seed>" if arg.startswith("--seed=") else arg for arg in command]
+            if result is declared:
+                declared_command = command
+            else:
+                self.assertEqual(command, declared_command)
+        self.assertTrue(all("::rts-" not in test_id for test_id in declared["summary"]["measured"]))
+
+    def test_ledger_separates_default_and_setting_rows(self):
+        self.cli("flake", "--target", "unit")
+        self.cli("flake", "--target", "unit", "--rts-capabilities", "1", "--trials", "1")
+        status = self.cli("status")
+        self.assertEqual(status["tests"], {"stable": 2, "flaky": 1})
+        self.assertEqual(status["rts_settings"]["-N1"], {"stable": 3})
+        ledger = Path(status["ledger"]).read_text()
+        self.assertIn("## RTS settings", ledger)
+        table = ledger.split("## RTS settings", 1)[1].split("## ", 1)[0]
+        self.assertIn("`A/one`", table)
+        self.assertTrue(all("unit::rts-1::" in line for line in table.splitlines() if line.startswith("| `unit::")))
+        self.assertNotIn("unit::rts-1::", ledger.split("## Flaky, failing and fixing", 1)[1])
+
     def test_flake_keeps_each_rts_setting_in_its_own_row_and_records_argv(self):
         import hashlib
 
@@ -170,7 +305,8 @@ class LabTests(LabFixture):
         self.assertEqual(resolved["target"]["id"], one_id)
         selected = self.cli("deflake", "select", "--owner", "rts-owner-1")
         self.assertEqual(selected["test"]["id"], one_id)
-        self.cli("deflake", "pr", one_id, "--owner", "rts-owner-1", "--pr", "https://example.test/1")
+        fixing = self.cli("deflake", "pr", one_id, "--owner", "rts-owner-1", "--pr", "https://example.test/1")
+        self.assertEqual(fixing["next_step"], f"When the PR merges, run `quruntul flake --target {one_id}` to verify this per-setting row on the merged revision.")
         other = self.cli("deflake", "select", "--owner", "rts-owner-2")
         self.assertEqual(other["test"]["id"], four_id)
         self.cli("deflake", "release", four_id, "--owner", "rts-owner-2", "--reason", "check setting claim")
@@ -248,6 +384,7 @@ class LabTests(LabFixture):
     def test_flake_measures_each_test_once_then_only_new_ones(self):
         first = self.cli("flake")
         self.assertEqual((first["outcome"], first["suite"]), ("complete", "unit"))
+        self.assertNotIn("## RTS settings", Path(first["ledger"]).read_text())
         self.assertEqual(self.statuses(), {"unit::A/one": "stable", "unit::A/two": "flaky", "unit::B/three": "stable"})
         self.assertEqual(first["summary"]["newly_flaky"], ["unit::A/two"])
         report_text = Path(first["report"]).read_text()
@@ -414,6 +551,7 @@ class LabTests(LabFixture):
             self.cli("deflake", "pr", "unit::A/two", "--owner", "d2", "--pr", "7")
         fixing = self.cli("deflake", "pr", "unit::A/two", "--owner", "d1", "--pr", "7")
         self.assertEqual(fixing["outcome"], "fixing")
+        self.assertIn("next $flake", fixing["next_step"])
         self.assertEqual(self.statuses()["unit::A/two"], "fixing")
         released = self.cli("deflake", "release", "unit::A/one", "--owner", "d2", "--reason", "cannot reproduce")
         self.assertEqual(released["outcome"], "released")
@@ -563,6 +701,10 @@ class HookTests(LabTests):
     test_a_test_failing_every_trial_is_failing_and_requeued_when_its_inputs_change = None
     test_a_batch_cut_short_is_neither_stable_nor_a_consistent_failure = None
     test_flake_keeps_each_rts_setting_in_its_own_row_and_records_argv = None
+    test_setting_batch_claim_is_busy_across_settings_but_not_other_suites = None
+    test_setting_first_keeps_default_flake_eligibility = None
+    test_default_flake_seeding_and_argv_match_without_rts_declaration = None
+    test_ledger_separates_default_and_setting_rows = None
     test_suite_rts_option_is_overridden_by_the_chosen_capability = None
     test_suite_without_a_capability_declaration_accepts_any_positive_count = None
     test_candidate_setting_batch_records_evidence_without_changing_status = None

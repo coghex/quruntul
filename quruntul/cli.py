@@ -296,11 +296,17 @@ def deflake(args, lab: Lab):
     if args.action == "pr":
         if not args.pr:
             raise LabError("--pr is required")
+        test = s.test(args.test)
+        if not test:
+            raise LabError(f"unknown test {args.test!r}")
         s.set_status(args.test, "fixing", f"deflake PR {args.pr}", dict(pr=args.pr), pr=args.pr)
         s.release(args.owner, "test:" + args.test)
         lab.render()
+        next_step = (f"When the PR merges, run `quruntul flake --target {args.test}` to verify this "
+                     "per-setting row on the merged revision.") if test.get("rts_capabilities") is not None else (
+                     "When the PR merges, the next $flake verifies the test on the merged revision.")
         return dict(outcome="fixing", test=args.test, pr=args.pr,
-                    next_step="When the PR merges, the next $flake verifies the test on the merged revision.")
+                    next_step=next_step)
     if not args.reason:
         raise LabError("--reason is required")
     s.event("deflake-released", args.test, dict(owner=args.owner, reason=args.reason))
