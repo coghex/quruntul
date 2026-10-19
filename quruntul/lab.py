@@ -378,7 +378,9 @@ class Lab:
         paths = [self.state.test(t)["path"] for t in selected]
         state_name, detail = "complete", None
         for number in range(1, trials + 1):
-            if deadline - time.monotonic() < room:
+            # A deadline the suite's batch_seconds allows always fits the untouched budget, so the first
+            # trial under one is admitted even when the clock has moved since the budget began.
+            if deadline - time.monotonic() < room and not (number == 1 and trial_deadline is not None):
                 return "budget-exhausted", f"batch budget left room for {number - 1} of {trials} trials"
             result, failure_report, trial = self._run_trial(suite, prepared, run_id, owner, artifacts, number,
                                                             None if whole else paths,
@@ -678,7 +680,8 @@ class Lab:
                 (f" and {len(unreported) - 5} more" if len(unreported) > 5 else ""),
                 evidence=f"`runs/{run_id}/trial-*.log`; outcome `missing` in the run's results",
                 expected="every completed trial reports every selected test",
-                observed=f"{len(unreported)} tests reported in no completed trial; those left unmeasured",
+                observed=f"{len(unreported)} tests reported in no completed trial; those left unmeasured" +
+                         "".join(_causes_note(t, summary["measured"][t]) for t in unreported[:5]),
                 confidence="high", follow_up="inspect the trial log's Hspec output against the enumeration"))
         if summary["interpretation"] == "blocked":
             observations.append(dict(

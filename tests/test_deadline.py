@@ -236,6 +236,34 @@ class DeadlineTests(LabFixture):
         without = run(None, [0, 0, 150, 150])
         self.assertEqual(without["summary"]["counts"], {"passed": 3})
 
+    def test_the_largest_allowed_deadline_still_runs_a_first_trial(self):
+        # A deadline equal to batch_seconds fits the fresh budget; only a second trial finds it spent.
+        first = self.batch(1, "--trial-deadline", "300")
+        self.assertEqual((first["outcome"], first["summary"]["counts"]), ("complete", {"passed": 1}))
+        two = self.batch(2, "--trial-deadline", "300", code=1)
+        self.assertEqual((two["outcome"], two["summary"]["counts"]), ("budget-exhausted", {"passed": 1}))
+        self.assertEqual(two["summary"]["reason"], "batch budget left room for 1 of 2 trials")
+
+    def test_the_unreported_test_observation_gives_the_failure_causes_too(self):
+        self.spec(dict(examples=["A/one"], crash_on=[1], omit=["A/one"]))
+        self.push("one crash, one unreported test")
+        result = self.batch(2, "--trial-deadline", "5")
+        measured = self.measured(result)
+        self.assertEqual((measured["failures"], measured["missing"]), (1, 1))
+        observations = self.cli("observations")
+        mine = [o for o in observations if o["run_id"] == result["run_id"]]
+        self.assertEqual(len(mine), 2)  # the flaky test, and the unreported one
+        for observation in mine:
+            self.assertIn("failed trials by cause", observation["document"]["observed"])
+            self.assertIn("1 crashed (killed by a signal)", observation["document"]["observed"])
+            self.assertIn("0 failed otherwise", observation["document"]["observed"])
+        # Without the option the same observation is what it was.
+        plain = self.batch(2)
+        self.assertEqual(self.measured(plain)["missing"], 1)
+        for observation in self.cli("observations"):
+            if observation["run_id"] == plain["run_id"]:
+                self.assertNotIn("by cause", observation["document"]["observed"])
+
     # -- refusals --------------------------------------------------------------
 
     def test_refusals_happen_before_any_build_or_trial(self):
@@ -255,7 +283,7 @@ class DeadlineTests(LabFixture):
                 refused = self.cli("flake", *flags, code=2)
                 self.assertIn(message, refused["error"])
         self.assertEqual(len(self.cli("runs")), before)
-        self.assertEqual(self.batch(1, "--trial-deadline", "250")["outcome"], "complete")
+        self.assertEqual(self.batch(1, "--trial-deadline", "300")["outcome"], "complete")
 
     def test_the_option_is_accepted_only_by_flake(self):
         for lane in ("shakedown", "test"):
