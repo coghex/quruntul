@@ -9,9 +9,11 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
+import os
 from pathlib import Path
 
 from quruntul import lab as lab_module
+from quruntul.lab import Lab
 from quruntul.state import State
 from tests.test_lab import EVENTS, HOOKED_ADAPTER, LEGACY, LabFixture, git
 
@@ -235,6 +237,35 @@ class DeadlineTests(LabFixture):
         self.assertEqual((high["outcome"], high["summary"]["counts"]), ("budget-exhausted", {"passed": 1}))
         without = run(None, [0, 0, 150, 150])
         self.assertEqual(without["summary"]["counts"], {"passed": 3})
+
+    def test_an_interrupted_trial_still_records_its_deadline(self):
+        self.faulty(stop=dict(after="A/one", how="interrupt", trials=[2]))
+        os.environ["FIXTURE_INTERRUPT_PID"] = str(os.getpid())
+        try:
+            result = self.batch(3, "--trial-deadline", "5", code=1)
+            plain = self.batch(3, code=1)
+        finally:
+            del os.environ["FIXTURE_INTERRUPT_PID"]
+        self.assertEqual(result["outcome"], "interrupted")
+        documents = self.trial_documents(result)
+        self.assertEqual([d["outcome"] for d in documents], ["passed", "interrupted"])
+        self.assertEqual([d["deadline_seconds"] for d in documents], [5, 5])
+        # Without the option the interrupted trial's record is what it was.
+        self.assertEqual(self.trial_documents(plain)[1], dict(outcome="interrupted"))
+
+    def test_stale_run_recovery_keeps_the_deadline_of_the_trial_it_closes(self):
+        lab = Lab(self.work, log=lambda _: None)
+        started = {}
+        for name, extra in (("with", dict(deadline_seconds=5)), ("without", {})):
+            run_id = lab.state.begin("flake", "unit", "r", "origin/master", True, dict(extra))
+            lab.state.start_trial(run_id, 1, dict(argv=["x"], seed=1, started="now", **extra))
+            lab.state.db.execute("UPDATE runs SET heartbeat='2000-01-01T00:00:00+00:00' WHERE id=?", (run_id,))
+            started[name] = run_id
+        self.assertCountEqual(lab.recover(), started.values())
+        closed = {name: lab.state.trials(run_id)[0]["document"] for name, run_id in started.items()}
+        self.assertEqual(closed["with"]["outcome"], "interrupted")
+        self.assertEqual(closed["with"]["deadline_seconds"], 5)
+        self.assertEqual(closed["without"], dict(outcome="interrupted", reason="owner stopped before recording"))
 
     def test_the_largest_allowed_deadline_still_runs_a_first_trial(self):
         # A deadline equal to batch_seconds fits the fresh budget; only a second trial finds it spent.

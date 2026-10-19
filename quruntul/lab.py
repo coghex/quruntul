@@ -125,7 +125,8 @@ class Lab:
             for trial in self.state.trials(run["id"]):
                 if trial["state"] == "running":
                     self.state.finish_trial(run["id"], trial["number"],
-                                            dict(outcome="interrupted", reason="owner stopped before recording"), {})
+                                            dict(outcome="interrupted", reason="owner stopped before recording",
+                                                 **_kept_deadline(trial)), {})
             counts = Counter(t["state"] for t in self.state.trials(run["id"]))
             self.state.finish(run["id"], "interrupted", dict(
                 reason=f"no heartbeat for {age:.0f}s; recorded trials kept, none replayed",
@@ -332,7 +333,8 @@ class Lab:
         finally:
             for trial in self.state.trials(run_id):
                 if trial["state"] == "running":
-                    self.state.finish_trial(run_id, trial["number"], dict(outcome="interrupted"), {})
+                    self.state.finish_trial(run_id, trial["number"],
+                                            dict(outcome="interrupted", **_kept_deadline(trial)), {})
             counts = dict(Counter(t["state"] for t in self.state.trials(run_id)))
             newly_flaky = [t for t, m in measured.items() if m.get("became") == "flaky"]
             newly_failing = [t for t, m in measured.items() if m.get("became") == "failing"]
@@ -424,6 +426,8 @@ class Lab:
             failure_report = None
             argv = prepared.wrapper + prepared.argv
         document = dict(argv=argv, seed=seed, started=utc())
+        if trial_deadline is not None:
+            document["deadline_seconds"] = trial_deadline  # on record before launch, so an interruption keeps it
         if record is not None:
             document["suite"] = suite.id
         self.state.start_trial(run_id, record or number, document)
@@ -1384,6 +1388,12 @@ def _environment(extra: dict | None) -> dict:
     env = {k: v for k, v in os.environ.items() if k not in SCRUBBED and not k.startswith("HSPEC_")}
     env.update(extra or {})
     return env
+
+
+def _kept_deadline(trial: dict) -> dict:
+    """The deadline a not-yet-finished trial was started under, for the result that closes it."""
+    deadline = trial["document"].get("deadline_seconds")
+    return {} if deadline is None else dict(deadline_seconds=deadline)
 
 
 def _causes_note(test_id: str, measured: dict) -> str:
