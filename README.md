@@ -19,6 +19,36 @@ three flaky tests.
 
 The name is the mountain of trials; the `q` makes it tab-complete.
 
+## Quick start
+
+Run the skills from a Codex session in the repository you're testing.
+`$flake`, `$deflake`, `$test`, `$playtest` and `$assess-tests` need the repository
+to commit `.quruntul/adapter.py` (Synarchy and Hetoimasia do, for example).
+`$profile` and `$performance` work in any repository. A typical order:
+
+1. **Check the adapter (recommended).** After an adapter or harness change, and
+   before seeding a ledger, `quruntul shakedown` runs one trial of every suite that
+   applies on this platform and reports any that fail to build, list or finish. It's advisory: it changes no
+   status, and measuring doesn't wait on it.
+2. **Measure flakiness.** `$flake 10` measures ten suites that still have
+   never-measured tests. `quruntul status` shows where the ledger stands.
+3. **Act on the results.** `$deflake` takes the worst unclaimed `flaky` test and
+   opens a PR with before/after evidence. A test that fails every trial is
+   `failing`, not flaky: take it to `$assess-tests`. Only the owner moves a stable
+   test back to flaky after it fails in CI, or an agent does it when the owner asks:
+   `quruntul mark TEST --status flaky --reason "failed in CI" --evidence URL`.
+4. **Run the local-only probes.** `$test` runs the next due probe; `$playtest`
+   runs a naive-player session where the adapter offers one. Each run leaves a
+   report whose `OBS-nnn` observations wait for assessment.
+5. **Turn observations into issues.** `$assess-tests` checks open observations
+   against the current code and proposes an assessment with an id and sha256.
+   Read it with `quruntul assess show <id>`, then approve it with
+   `$assess-tests approve <id> <sha256>`, which files the issues it drafted.
+   Nothing is filed before that approval.
+6. **Profile.** `$profile` runs one reproducible performance experiment;
+   `$performance` assesses the reports and delivers a fix only when you
+   authorize it. Both still use the `codex-profile` coordinator.
+
 ## How it fits together
 
 - **One ledger per clone** — `<git-common-dir>/quruntul/ledger.sqlite3`, shared
@@ -86,9 +116,11 @@ Before seeding a repository, and after changing its adapter, run
 launch it, reporting any suite that fails to build, list its tests, complete
 its trial or report every test, without touching the ledger.
 
-Skills choose by what the checkout contains: with `.quruntul/adapter.py` they use
-quruntul; without it, they report that the repository has no quruntul adapter and
-stop. `$playtest` additionally requires the adapter's `playtest()` capability.
+`$flake`, `$deflake`, `$test`, `$playtest` and `$assess-tests` choose by what the
+checkout contains: with `.quruntul/adapter.py` they use quruntul; without it, they
+report that the repository has no quruntul adapter and stop. `$playtest`
+additionally requires the adapter's `playtest()` capability. `$profile` and
+`$performance` keep the `codex-profile` coordinator in every repository for now.
 
 ## Development
 
