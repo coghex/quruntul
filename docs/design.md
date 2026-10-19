@@ -348,7 +348,7 @@ Every skill accepts the same shapes after its name:
 | Argument | Meaning |
 |---|---|
 | none | one iteration; the lane selects |
-| `N` (a positive integer) | N serial iterations, each a fresh selection, each in a fresh subagent when available |
+| `N` (a positive integer) | N serial iterations, each a fresh selection, each in a fresh Sonnet subagent only when one was explicitly requested |
 | a test id, suite id or probe id the ledger knows | one iteration targeting it |
 | `N <target>` | N iterations targeting it (e.g. N deflake attempts on one test) |
 | anything else | a hint (area, question) for lanes that take one (`$test`, `$profile`, `$playtest`) |
