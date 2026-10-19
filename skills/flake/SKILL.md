@@ -105,7 +105,8 @@ reasons to repair the launch before paying for batches.
 ## Repeating: `$flake N`
 
 Run N iterations **serially**, one batch each. Give each iteration to a fresh
-subagent when you can delegate; otherwise run them yourself one after another.
+subagent only when one was explicitly requested (the owner's global rule; Sonnet only);
+otherwise run them yourself one after another.
 Give each worker this task:
 
 > In `<repo>`, run exactly one `quruntul flake` iteration as the installed

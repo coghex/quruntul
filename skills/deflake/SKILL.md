@@ -130,8 +130,9 @@ quruntul deflake pr <test> --owner <owner> --pr <PR-URL-or-number>
 
 ## Repeating: `$deflake N`
 
-Run iterations **serially**, each on a different test and each in a fresh
-subagent when you can delegate. Each worker gets:
+Run iterations **serially**, each on a different test. Give each to a fresh
+subagent only when one was explicitly requested (the owner's global rule; Sonnet only);
+otherwise run them yourself one after another. Each worker gets:
 
 > In `<repo>`, complete exactly one `$deflake` iteration (`<test if targeted>`)
 > as the installed skill describes, from claim to PR or release. Return the
