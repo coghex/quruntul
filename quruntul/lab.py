@@ -30,6 +30,14 @@ DEFAULT_TRIALS = 10
 DEFAULT_REFRESH_DAYS = 7
 # An ambient filter or RTS override must never silently change a trial.
 SCRUBBED = ("GHCRTS",)
+# Why a trial of a batch under a trial deadline failed a test without Hspec naming it a failure, or
+# after Hspec had reported it passed. Each failed trial falls under at most one.
+FAILURE_CAUSES = ("timed-out", "crashed", "exited-nonzero",
+                  "passed-then-timed-out", "passed-then-crashed", "passed-then-exited-nonzero")
+CAUSE_WORDS = {"timed-out": "timed out", "crashed": "crashed (killed by a signal)",
+               "exited-nonzero": "exited nonzero without the test's report",
+               "passed-then-timed-out": "passed then timed out", "passed-then-crashed": "passed then crashed",
+               "passed-then-exited-nonzero": "passed then exited nonzero"}
 
 
 class Lab:
@@ -174,12 +182,17 @@ class Lab:
     # -- flake --------------------------------------------------------------
 
     def flake(self, owner: str, target: str | None = None, ref: str | None = None,
-              trials: int | None = None, rts_capabilities: int | None = None) -> dict:
+              trials: int | None = None, rts_capabilities: int | None = None,
+              trial_deadline: int | None = None) -> dict:
         """One flake batch: the next suite with unmeasured tests, or an explicit target."""
         if rts_capabilities is not None and (type(rts_capabilities) is not int or rts_capabilities < 1):
             raise LabError("RTS capability count must be a positive integer")
         if rts_capabilities is not None and not target:
             raise LabError("an RTS capability count requires an explicit --target")
+        if trial_deadline is not None and (type(trial_deadline) is not int or trial_deadline < 1):
+            raise LabError("trial deadline must be a positive whole number of seconds")
+        if trial_deadline is not None and not target:
+            raise LabError("a trial deadline requires an explicit single-test --target")
         self.recover()
         source_ref, revision, upstream = self.resolve(ref)
         checkout = self.checkout(revision)
@@ -206,6 +219,14 @@ class Lab:
                 if suite.rts_capabilities and rts_capabilities not in suite.rts_capabilities:
                     raise LabError(f"{suite.id}: -N{rts_capabilities} is not declared; allowed: "
                                    + ", ".join(f"-N{k}" for k in suite.rts_capabilities))
+            if trial_deadline is not None:
+                if test is None:
+                    raise LabError(f"a trial deadline requires a single-test target; {target!r} is a suite")
+                if suite.framework != "hspec":
+                    raise LabError(f"{suite.id}: a trial deadline requires an Hspec suite")
+                if trial_deadline > suite.batch_seconds:
+                    raise LabError(f"{suite.id}: a trial deadline of {trial_deadline}s exceeds its "
+                                   f"batch_seconds ({suite.batch_seconds})")
             explicit_test = target if test else None
             if test and rts_capabilities is not None and test.get("rts_capabilities") is None:
                 explicit_test = self.state.test_id(suite_id, test["path"], rts_capabilities)
@@ -225,7 +246,7 @@ class Lab:
         for suite, why in order:
             outcome = self._flake_suite(adapter, suite, why, owner, checkout, revision, source_ref, upstream,
                                         trials, explicit_test, explicit=target is not None,
-                                        rts_capabilities=rts_capabilities)
+                                        rts_capabilities=rts_capabilities, trial_deadline=trial_deadline)
             if outcome["outcome"] != "nothing-new":
                 outcome["skipped"] = skipped
                 return outcome
@@ -247,7 +268,7 @@ class Lab:
         return merged
 
     def _flake_suite(self, adapter, suite, why, owner, checkout, revision, source_ref, upstream, trials,
-                     explicit_test, explicit, rts_capabilities=None) -> dict:
+                     explicit_test, explicit, rts_capabilities=None, trial_deadline=None) -> dict:
         claim_document = dict(revision=revision)
         if rts_capabilities is not None:
             claim_document["rts_capabilities"] = rts_capabilities
@@ -261,6 +282,8 @@ class Lab:
                             platform=platform.system(), explicit_test=explicit_test)
         if rts_capabilities is not None:
             run_document["rts_capabilities"] = rts_capabilities
+        if trial_deadline is not None:
+            run_document["deadline_seconds"] = trial_deadline
         run_id = self.state.begin("flake", suite.id, revision, source_ref, upstream, run_document)
         artifacts = self.directory / "runs" / run_id
         artifacts.mkdir(parents=True, exist_ok=True)
@@ -300,8 +323,8 @@ class Lab:
                 return dict(outcome="nothing-new", suite=suite.id)
             whole = not duplicates and len(selected) == len([r for r in rows.values() if r["status"] != "retired"])
             state_name, detail = self._trials(suite, prepared, run_id, owner, artifacts, selected, trials, whole,
-                                               duplicates, rts_capabilities)
-            measured = self._decide(suite, run_id, revision, selected, upstream, explicit, trials)
+                                               duplicates, rts_capabilities, trial_deadline)
+            measured = self._decide(suite, run_id, revision, selected, upstream, explicit, trials, trial_deadline)
         except LabError as error:
             state_name, detail = "blocked", str(error)
         except KeyboardInterrupt:
@@ -349,18 +372,22 @@ class Lab:
         return paths, duplicates
 
     def _trials(self, suite, prepared, run_id, owner, artifacts, selected, trials, whole, duplicates=None,
-                rts_capabilities=None):
+                rts_capabilities=None, trial_deadline=None):
         deadline = time.monotonic() + suite.batch_seconds
+        room = trial_deadline or suite.trial_seconds
         paths = [self.state.test(t)["path"] for t in selected]
         state_name, detail = "complete", None
         for number in range(1, trials + 1):
-            if deadline - time.monotonic() < suite.trial_seconds:
+            if deadline - time.monotonic() < room:
                 return "budget-exhausted", f"batch budget left room for {number - 1} of {trials} trials"
             result, failure_report, trial = self._run_trial(suite, prepared, run_id, owner, artifacts, number,
                                                             None if whole else paths,
-                                                            rts_capabilities=rts_capabilities)
+                                                            rts_capabilities=rts_capabilities,
+                                                            trial_deadline=trial_deadline)
             outcomes = self._outcomes(suite, result, selected, failure_report, Path(trial["prefix"] + ".checks.json"),
                                       trial, duplicates)
+            if trial_deadline is not None:
+                outcomes = self._strict_outcomes(result, outcomes)
             self.state.finish_trial(run_id, number, result, outcomes)
             failed = sum(1 for o in outcomes.values() if o == "failed")
             self.log(f"{suite.id} {number}/{trials}: {result['outcome']}, {failed} failed of {len(selected)} "
@@ -370,7 +397,7 @@ class Lab:
         return state_name, detail
 
     def _run_trial(self, suite, prepared, run_id, owner, artifacts, number, paths, record=None,
-                   rts_capabilities=None):
+                   rts_capabilities=None, trial_deadline=None):
         """Launch one trial as every lane does: the prepared argv, working directory, environment and
         wrapper, the trial_env hook, and for Hspec exact selection of `paths` (None: the whole suite).
 
@@ -398,9 +425,11 @@ class Lab:
         if record is not None:
             document["suite"] = suite.id
         self.state.start_trial(run_id, record or number, document)
-        result = process.run(argv, Path(prepared.cwd), _environment(env), artifacts / name, suite.trial_seconds,
-                             lambda: self.state.run_heartbeat(run_id, owner))
+        result = process.run(argv, Path(prepared.cwd), _environment(env), artifacts / name,
+                             trial_deadline or suite.trial_seconds, lambda: self.state.run_heartbeat(run_id, owner))
         result["seed"] = seed
+        if trial_deadline is not None:
+            result["deadline_seconds"] = trial_deadline
         return result, failure_report, trial
 
     def _hook(self, name, suite, trial):
@@ -470,6 +499,22 @@ class Lab:
             return {t: "incomplete" for t in selected}
         return {test_id: checks[path] if checks[path] != "unproven" else "incomplete" for path, test_id in by_path.items()}
 
+    def _strict_outcomes(self, result, outcomes) -> dict[str, str]:
+        """A batch under a trial deadline counts a trial that timed out, was killed by a signal, or exited
+        nonzero without completing a report of the targeted test as a failure of it, and so does one that
+        reported the test passed first. The cause is kept in the trial's own record, beside the outcome."""
+        ended = result["outcome"]
+        causes = {}
+        for test_id, outcome in outcomes.items():
+            if ended in ("timeout", "crashed"):
+                cause = "timed-out" if ended == "timeout" else "crashed"
+                causes[test_id] = "passed-then-" + cause if outcome == "passed" else cause
+            elif ended == "failed" and outcome != "failed":
+                causes[test_id] = "passed-then-exited-nonzero" if outcome == "passed" else "exited-nonzero"
+        if causes:
+            result["failure_causes"] = causes
+        return {test_id: "failed" if test_id in causes else outcome for test_id, outcome in outcomes.items()}
+
     def _diagnose_duplicates(self, result, text, known, failure_report, duplicates):
         failures = {path: dict(path=path, log=result.get("log"))
                     for path, mark in hspec.check_occurrences(text, known)
@@ -507,7 +552,8 @@ class Lab:
             self.state.set_status(test_id, seed["status"], "seeded: " + str(seed.get("reason", "")),
                                   dict(seed=seed.get("evidence", {})))
 
-    def _decide(self, suite, run_id, revision, selected, upstream, explicit, requested) -> dict:
+    def _decide(self, suite, run_id, revision, selected, upstream, explicit, requested,
+                trial_deadline=None) -> dict:
         """Counters for every selected test; status changes only for an upstream-head batch."""
         results = self.state.results(run_id)
         trials = {t["number"]: t for t in self.state.trials(run_id)}
@@ -516,6 +562,12 @@ class Lab:
             mine = [r for r in results if r["test_id"] == test_id]
             passes = sum(1 for r in mine if r["outcome"] == "passed")
             failures = sum(1 for r in mine if r["outcome"] == "failed")
+            causes = Counter()
+            if trial_deadline is not None:
+                for r in mine:
+                    if r["outcome"] == "failed":
+                        causes[trials[r["number"]]["document"].get("failure_causes", {}).get(test_id)] += 1
+                causes = {cause: causes.get(cause, 0) for cause in FAILURE_CAUSES}
             complete = sum(1 for r in mine if r["outcome"] in ("passed", "failed", "pending"))
             missing = sum(1 for r in mine if r["outcome"] == "missing")
             outcome = "failed" if failures else ("passed" if complete and passes == complete else "incomplete")
@@ -526,7 +578,9 @@ class Lab:
             # short (its budget, a harness error) has fewer trials than it asked
             # for, and proves neither stability nor a consistent failure.
             planned = requested
-            whole = len(trials) == requested and all(t["state"] in ("passed", "failed") for t in trials.values())
+            # Under a trial deadline a trial that timed out or was killed by a signal is a failed trial too.
+            completed = ("passed", "failed", "timeout", "crashed") if trial_deadline is not None else ("passed", "failed")
+            whole = len(trials) == requested and all(t["state"] in completed for t in trials.values())
             # Failed in every trial: a consistent failure, not flakiness. In a
             # young project the harness or the environment is the first
             # suspect, so it goes to assessment rather than $deflake. This is
@@ -550,11 +604,15 @@ class Lab:
                     # It is not measured, so it is neither stable nor new work.
                     became = "pending"
                 if became:
-                    self.state.set_status(test_id, became, f"flake batch {run_id}: {failures} failed of {complete}",
+                    self.state.set_status(test_id, became,
+                                          f"flake batch {run_id}: {failures} failed of {complete}"
+                                          + (f" ({_cause_text(causes, failures)})" if trial_deadline is not None else ""),
                                           dict(run=run_id, revision=revision))
             measured[test_id] = dict(passes=passes, failures=failures, complete=complete, became=became,
                                      missing=missing, consistent=consistent,
                                      failing_trials=[r["number"] for r in mine if r["outcome"] == "failed"])
+            if trial_deadline is not None:
+                measured[test_id]["failure_causes"] = causes
         return measured
 
     def _flake_report(self, run_id, suite, summary, detail):
@@ -589,7 +647,8 @@ class Lab:
                 expected="every trial passes",
                 observed=f"each failed all {summary['planned_trials']} trials; statuses now: " + ", ".join(
                     f"{status} {count}" for status, count in sorted(Counter(
-                        self.state.test(t)["status"] for t in failing).items())),
+                        self.state.test(t)["status"] for t in failing).items())) +
+                         "".join(_causes_note(t, summary["measured"][t]) for t in failing[:5]),
                 confidence="medium",
                 follow_up="$assess-tests: a consistent failure is not flakiness; check the harness and "
                           "environment before the product"))
@@ -605,7 +664,7 @@ class Lab:
                 evidence=f"{logs}; seeds in the trial results; run {run_id}",
                 expected="every trial passes",
                 observed=f"{m['failures']} failures in {m['complete']} complete trials" +
-                         (f"; status now {m['became']}" if m["became"] else ""),
+                         (f"; status now {m['became']}" if m["became"] else "") + _causes_note(test_id, m),
                 confidence="high", follow_up="$deflake " + test_id))
         unreported = sorted(t for t, m in summary["measured"].items() if m.get("missing"))
         if unreported:
@@ -632,7 +691,13 @@ class Lab:
             f"- Suite: `{suite.id}` ({suite.kind}, {suite.framework}); selected because: {run['document']['reason']}",
             *([f"- RTS capability count: `-N{run['document']['rts_capabilities']}`"]
               if run['document'].get("rts_capabilities") is not None else []),
+            *([f"- Trial deadline: {run['document']['deadline_seconds']}s per trial (the suite's own `trial_seconds` "
+               f"is {run['document']['suite']['trial_seconds']}s)"]
+              if run['document'].get("deadline_seconds") is not None else []),
             f"- Trials: {summary['counts']} of {summary['planned_trials']} planned; selected tests: {summary['selected']}",
+            *[f"- `{test_id}` failed trials by cause: {_cause_text(m['failure_causes'], m['failures'])}"
+              for test_id, m in sorted(summary["measured"].items()) if "failure_causes" in m],
+            *self._comparability(run),
             f"- Became stable: {sum(1 for m in summary['measured'].values() if m['became'] == 'stable')}; "
             f"became flaky: {len(summary['newly_flaky'])}; became failing: {len(summary['newly_failing'])}",
             f"- Result: `runs/{run_id}/result.json`; raw logs beside it",
@@ -651,6 +716,28 @@ class Lab:
         if observations:
             self.state.add_observations(run_id, report.parse(text)["observations"])
         atomic_json(artifacts / "result.json", self.state.run(run_id))
+
+    def _comparability(self, run) -> list[str]:
+        """For a candidate batch under a trial deadline: whether its row's latest upstream baseline ran under the
+        same deadline. The baseline's deadline is read from its own retained record, never the current suite."""
+        deadline = run["document"].get("deadline_seconds")
+        if deadline is None or run["upstream"]:
+            return []
+        lines = []
+        for test_id in run["document"].get("selected", []):
+            baseline = self.state.baseline(test_id, run["id"])
+            if baseline is None:
+                lines.append(f"- Baseline of `{test_id}`: no earlier batch at the upstream head measured this test, "
+                             "so there is nothing to compare this candidate with")
+                continue
+            document = baseline["document"]
+            earlier = document.get("deadline_seconds")
+            earlier = earlier if earlier is not None else document["suite"]["trial_seconds"]
+            lines.append(
+                f"- Baseline of `{test_id}`: batch `{baseline['id']}` ran under a {earlier}s per-trial deadline; "
+                + (f"this candidate ran under the same {deadline}s deadline, so they are comparable" if earlier == deadline
+                   else f"this candidate ran under {deadline}s, so they are not comparable"))
+        return lines
 
     # -- shakedown -------------------------------------------------------------
 
@@ -1294,6 +1381,17 @@ def _environment(extra: dict | None) -> dict:
     env = {k: v for k, v in os.environ.items() if k not in SCRUBBED and not k.startswith("HSPEC_")}
     env.update(extra or {})
     return env
+
+
+def _causes_note(test_id: str, measured: dict) -> str:
+    return (f"; `{test_id}` failed trials by cause: {_cause_text(measured['failure_causes'], measured['failures'])}"
+            if "failure_causes" in measured else "")
+
+
+def _cause_text(causes: dict[str, int], failures: int) -> str:
+    """Every cause with its count, and the failed trials that fell under none of them."""
+    return ", ".join([f"{causes.get(cause, 0)} {CAUSE_WORDS[cause]}" for cause in FAILURE_CAUSES]
+                     + [f"{failures - sum(causes.values())} failed otherwise"])
 
 
 def _epoch(stamp: str) -> float:

@@ -59,6 +59,8 @@ recorded lab failure.
 
 A per-setting test id already names its `-N` count. Pass that id to `quruntul flake --target` for both baseline and candidate batches; do not translate it to the default test id. A default test measured at a requested count uses `--rts-capabilities <k>` on that explicit target.
 
+When the user asked for a hard per-trial deadline, add `--trial-deadline <seconds>` to both the baseline and the candidate batch (`quruntul flake --target <test> --trials <N> --trial-deadline <seconds> --owner <owner>`). The candidate's `report.md` says whether its deadline matches the baseline's; batches under different deadlines are not comparable, so use the same value for both.
+
 Read the failing trials' logs and seeds. Then measure a **baseline** at the
 upstream head:
 
@@ -98,6 +100,8 @@ it (unpushed is fine), then measure the **candidate** with the same N:
 ```sh
 quruntul flake --target <test> --ref <candidate-commit> --trials <N> --owner <owner>
 ```
+
+Add the same `--trial-deadline <seconds>` here when the baseline used one.
 
 Candidate batches are evidence only; they never change the ledger's status. The
 fix is proven when the baseline failed and the candidate, with the same N,

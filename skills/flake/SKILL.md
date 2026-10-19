@@ -59,6 +59,8 @@ meant. Do not guess.
 
    Pass `--rts-capabilities <k>` only when the user explicitly requested a capability count, and only with an explicit Hspec test or suite target. A suite may restrict counts in `rts_capabilities`; use a declared count when present. Without the option, run the ordinary default batch and selection. An explicit per-setting test id carries its setting, so target it without adding another count.
 
+   Pass `--trial-deadline <seconds>` only when the user explicitly requested a hard per-trial deadline, and only with one explicit Hspec test id (never a suite, and never a `command` or `exit` suite). It may be combined with `--rts-capabilities`, and it may raise or lower the suite's `trial_seconds` up to the suite's `batch_seconds`. Under it, a trial that times out, is killed by a signal, or exits nonzero without a completed report of the test counts as a failure of that test, and so does one that reported the test passed and then did any of those. The result and the report name the cause of each such failure (`failure_causes`). A default `$flake` iteration does not choose a deadline: without the option, run the ordinary batch.
+
    Never add `--ref`. That is only for the user's explicit candidate-evidence
    requests, and for `$deflake`. The command fetches upstream, pins a
    detached checkout, builds through the adapter, enumerates, runs the

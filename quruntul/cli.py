@@ -69,6 +69,9 @@ def parser() -> argparse.ArgumentParser:
     f.add_argument("--ref", help="a committed revision; anything but the upstream head is candidate evidence")
     f.add_argument("--trials", type=int)
     f.add_argument("--rts-capabilities", type=int, help="run an explicit Hspec target with GHC -N<k>")
+    f.add_argument("--trial-deadline", type=int, metavar="SECONDS",
+                   help="run an explicit single Hspec test under a hard per-trial deadline; a timed-out, "
+                        "crashed or nonzero-exit trial counts as a failure of it")
     f.add_argument("--owner")
 
     sd = sub.add_parser("shakedown", help="one trial of every applicable suite at the upstream head; advisory")
@@ -172,7 +175,7 @@ def run(args, lab: Lab):
     if op == "flake":
         owner = args.owner or new_owner("flake")
         try:
-            return lab.flake(owner, args.target, args.ref, args.trials, args.rts_capabilities)
+            return lab.flake(owner, args.target, args.ref, args.trials, args.rts_capabilities, args.trial_deadline)
         finally:
             if not args.owner:
                 s.release(owner)

@@ -165,7 +165,7 @@ class LabTests(LabFixture):
         setting = self.cli("flake", "--target", "unit", "--rts-capabilities", "1", "--trials", "1")
         document = self.cli("show", setting["run_id"])["document"]
         self.assertEqual(document["rts_capabilities"], 1)
-        self.assertEqual(document["prepared"]["provenance"]["engine_version"], [0, 5, 0])
+        self.assertEqual(document["prepared"]["provenance"]["engine_version"], [0, 6, 0])
         automatic = self.cli("flake", "--trials", "1")
         self.assertEqual((automatic["suite"], automatic["summary"]["selected"]), ("unit", 3))
         self.assertEqual(set(automatic["summary"]["measured"]),
