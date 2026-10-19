@@ -112,6 +112,24 @@ about observation, not flakiness; it never changes status.
 
 Status changes are events. The ledger keeps every transition with its evidence.
 
+An explicit flake batch may measure an Hspec test at a chosen RTS capability
+count with `quruntul flake --target TEST --rts-capabilities K`. That measurement
+has a separate row, counters, events and evidence for each `K`; its stable id
+is distinct from the default row and every other setting's row. The original
+Hspec path remains in the ledger for matching. Setting enumeration, retirement,
+revival, input-change resets and duplicate handling apply only to that setting.
+An explicit per-setting test id carries its setting when passed to
+`quruntul flake --target`; a default test id plus `--rts-capabilities K` selects
+its corresponding per-setting row. A conflicting setting is refused.
+
+Per-setting rows are ordinary tests for `mark`, `note`, `deflake`, and argument
+resolution. They are listed separately from default rows in `quruntul tests`
+and `ledger.md`. Default probes, seed verdicts and automatic flake selection
+use default rows only; a per-setting row is measured again only by its explicit
+target. A suite may declare `rts_capabilities=[1, 4]` to restrict the option;
+an empty declaration allows any positive integer. Declarations do not affect
+batches without the option.
+
 ## Batches
 
 A flake batch runs one suite's selected tests K times in fresh processes,
@@ -137,6 +155,13 @@ neither. A batch at any other revision (`--ref`) is **candidate evidence**: it
 is recorded, counted and reported, but it never changes status, because a
 candidate's failure may be the candidate's own. `$deflake` proves fixes with
 exactly such batches.
+
+One setting is chosen per batch. The selected count is appended as the last
+`-N` in each Hspec trial's `+RTS ... -RTS` options, overriding suite RTS
+options and executable defaults. The run, result, report and observations
+record the count. `GHCRTS` remains scrubbed. A capability count requires an
+explicit target and an Hspec suite; it is refused for command/exit suites or
+when a suite's declared list excludes it. Enumeration may use its normal argv.
 
 ## Shakedowns
 
@@ -235,6 +260,9 @@ A claim whose heartbeat is older than its lease (default 10 minutes) is stale
 and may be taken over; the takeover is an event. Long-running work heartbeats.
 
 - Two agents never measure the same suite at the same time.
+- Flake batches of one suite remain serialized across settings. A setting batch
+  records its `-N` count in its suite claim; a second batch at any setting gets
+  the ordinary busy outcome. Different suites remain independent.
 - Builds in one pinned checkout are serialized by `build:<checkout>`; trials of
   different suites then run in parallel.
 - Suites that open windows (`desktop: true`) also take the single `desktop`
@@ -277,14 +305,18 @@ selectors (its `--skip` selectors still apply), which profile suites need.
 0.3.0 added the `failing` status for a test that fails every requested trial,
 and reads Hspec trial output against the suite's enumerated paths. 0.4.0 added
 the optional `legacy_history` hook and `quruntul import-history`; an adapter
-supplying the hook refuses an older engine. It defines `adapter()` returning an
-object with:
+supplying the hook refuses an older engine. 0.5.0 added the optional
+`rts_capabilities` list for suites that restrict explicit per-setting flake
+batches; an adapter using it refuses an older engine. It defines `adapter()`
+returning an object with:
 
 - `name` — the repository's name.
 - `suites(ctx)` — every suite at the checkout: id, kind (`ci`/`probe`),
   framework, description, area, platforms, desktop flag, trial and batch
   limits, `batch_tests` (at most this many unmeasured tests per flake batch, so
-  a large suite is measured in slices), and a source identity. Frameworks:
+  a large suite is measured in slices), optional `rts_capabilities` (an empty
+  list allows any positive setting; otherwise it restricts explicit batches),
+  and a source identity. Frameworks:
   `hspec` (each example a test), `command` (each declared check a test) and
   `exit` (one test, `run`, decided by the exit status alone).
 - `prepare(ctx, suite)` — build it (through `ctx.run`, so the guardian owns the
@@ -543,17 +575,17 @@ and imports with nothing new, regenerate no view.
 
 ### Migration
 
-Schema 2 adds the `imports`, `imported` and `evidence` tables. The migration is
-explicit and idempotent: every other command upgrades a populated schema-1
-ledger in place, in one transaction, keeping every native row, piece of
-evidence and queue, and recording the new schema version; a ledger already at
-schema 2 is left alone. A migration that cannot apply fails and leaves the
-ledger as it was. `quruntul import-history` instead migrates inside its own
-commit, so a refused or interrupted import leaves an older ledger at its
-schema, and on a repository with no ledger it creates one only when it
-commits: a refused, failed or interrupted first import leaves no ledger
-behind. The ledger is never
-reset.
+Schema 2 adds the `imports`, `imported` and `evidence` tables. Schema 3 adds a
+nullable setting column to tests and a `rts_settings` table for each setting's
+independent enumeration identity. Migrations are explicit and idempotent:
+every command upgrades a populated older ledger one schema version at a time,
+in one transaction, keeping every existing row, piece of evidence and queue.
+A ledger already at schema 3 is left alone. A migration that cannot apply
+fails and leaves the ledger as it was. `quruntul import-history` instead
+migrates inside its own commit, so a refused or interrupted import leaves an
+older ledger at its schema, and on a repository with no ledger it creates one
+only when it commits: a refused, failed or interrupted first import leaves no
+ledger behind. The ledger is never reset.
 
 ## Legacy repositories
 
