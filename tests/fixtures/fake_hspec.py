@@ -20,6 +20,7 @@ so twins may disagree (dry runs still pass). `no_report` omits the failure file.
 import json
 import os
 import signal
+import sqlite3
 import subprocess
 import sys
 import time
@@ -34,8 +35,16 @@ def main(argv):
     sys.stdout.reconfigure(line_buffering=True)
     spec = json.loads(Path(os.environ.get("FAKE_HSPEC_SPEC", "spec.json")).read_text())
     if os.environ.get("FAKE_HSPEC_RECORD"):
-        Path(os.environ["FAKE_HSPEC_RECORD"]).write_text(json.dumps(dict(
-            argv=argv, env={k: v for k, v in os.environ.items() if k.startswith("FIXTURE_")})))
+        record_path = Path(os.environ["FAKE_HSPEC_RECORD"])
+        database = record_path.parent.parent.parent / "ledger.sqlite3"
+        claim = None
+        if database.exists():
+            with sqlite3.connect(database) as db:
+                row = db.execute("SELECT document FROM claims WHERE resource='suite:unit'").fetchone()
+                claim = json.loads(row[0]) if row else None
+        record_path.write_text(json.dumps(dict(
+            argv=argv, env={k: v for k, v in os.environ.items() if k.startswith("FIXTURE_")},
+            ghcrts=os.environ.get("GHCRTS"), claim=claim)))
     if Path("override.json").exists():
         # Outside the fixture suite's identity: changes behaviour without re-queueing tests.
         spec.update(json.loads(Path("override.json").read_text()))
@@ -56,6 +65,7 @@ def main(argv):
             report = arg.split("=", 1)[1]
         index += 1
     trial = int(os.environ.get("QURUNTUL_TRIAL", "0"))
+    rts = next((arg[2:] for arg in reversed(argv) if arg.startswith("-N") and arg[2:].isdigit()), None)
     if report and not dry and spec.get("report_dir"):
         os.makedirs(report, exist_ok=True)
     if trial in spec.get("crash_on", []):
@@ -70,6 +80,7 @@ def main(argv):
         seen[path] = occurrence + 1
         overrides = spec.get("occurrences", {}).get(path, [])
         mark = ("passed" if dry else overrides[occurrence] if occurrence < len(overrides) else
+                "failed" if trial in spec.get("fail_rts", {}).get(path, {}).get(rts, []) else
                 "failed" if trial in spec.get("fail", {}).get(path, []) else
                 "pending" if path in spec.get("pending", []) else "passed")
         marks.append(mark)

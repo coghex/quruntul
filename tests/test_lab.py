@@ -37,7 +37,8 @@ class Fixture:
         probe = (ctx.checkout / "probe.py").read_text()
         Suite, digest = ctx.Suite, ctx.digest
         return [Suite(id="unit", kind="ci", framework="hspec", description="fake hspec suite",
-                      area="core", identity=digest(spec), trial_seconds=30, batch_seconds=300, priority=20),
+                      area="core", identity=digest(spec), trial_seconds=30, batch_seconds=300, priority=20,
+                      rts_capabilities=[1, 4]),
                 Suite(id="probe-a", kind="probe", framework="command", description="a slow observation",
                       area="lua", identity=digest(probe), checks=["alpha", "beta"],
                       trial_seconds=30, batch_seconds=300)]
@@ -48,7 +49,8 @@ class Fixture:
             raise RuntimeError("build failed")
         if suite.framework == "hspec":
             exe = str(ctx.checkout / "fake_hspec.py")
-            return ctx.Prepared(argv=[exe], cwd=str(ctx.checkout), environment={},
+            return ctx.Prepared(argv=[exe], cwd=str(ctx.checkout),
+                                environment={"FAKE_HSPEC_RECORD": str(ctx.artifacts / "fake-hspec-record.json")},
                                 provenance=dict(executable_sha256=hashlib.sha256(Path(exe).read_bytes()).hexdigest()))
         return ctx.Prepared(argv=[sys.executable, str(ctx.checkout / "probe.py")], cwd=str(ctx.checkout), environment={})
 
@@ -114,6 +116,135 @@ class LabFixture(unittest.TestCase):
 
 
 class LabTests(LabFixture):
+    def test_flake_keeps_each_rts_setting_in_its_own_row_and_records_argv(self):
+        import hashlib
+
+        self.spec(dict(examples=["A/one"], fail_rts={"A/one": {"1": [1]}}))
+        self.push("setting-sensitive fixture")
+        default = self.cli("flake", "--target", "unit", "--trials", "3")
+        default_id = "unit::A/one"
+        default_argv = self.cli("show", default["run_id"])["trials"][0]["document"]["command"]
+        self.assertNotIn("+RTS", default_argv)
+        original = self.cli("tests")[0]
+        before = (original["status"], original["trials"], original["failures"])
+
+        old_ghcrts = os.environ.get("GHCRTS")
+        os.environ["GHCRTS"] = "-N8"
+        try:
+            one = self.cli("flake", "--target", default_id, "--rts-capabilities", "1", "--trials", "3")
+            four = self.cli("flake", "--target", default_id, "--rts-capabilities", "4", "--trials", "3")
+        finally:
+            if old_ghcrts is None:
+                os.environ.pop("GHCRTS", None)
+            else:
+                os.environ["GHCRTS"] = old_ghcrts
+
+        one_id = f"unit::rts-1::{hashlib.sha256(b'A/one').hexdigest()}"
+        four_id = f"unit::rts-4::{hashlib.sha256(b'A/one').hexdigest()}"
+        rows = {row["id"]: row for row in self.cli("tests")}
+        self.assertEqual((rows[default_id]["status"], rows[default_id]["trials"], rows[default_id]["failures"]), before)
+        self.assertEqual((rows[one_id]["status"], rows[one_id]["failures"]), ("flaky", 1))
+        self.assertEqual((rows[four_id]["status"], rows[four_id]["failures"]), ("stable", 0))
+        self.assertEqual(rows[one_id]["rts_capabilities"], 1)
+        self.assertEqual(rows[four_id]["rts_capabilities"], 4)
+        for result, count in ((one, "1"), (four, "4")):
+            trial = self.cli("show", result["run_id"])["trials"][-1]["document"]
+            argv = trial["command"]
+            self.assertEqual(argv[argv.index("+RTS") + 1:argv.index("-RTS")], [f"-N{count}"])
+            self.assertEqual(result["summary"]["measured"].keys(), {one_id if count == "1" else four_id})
+            recorded = json.loads((Path(result["result"]).parent / "fake-hspec-record.json").read_text())
+            self.assertIsNone(recorded["ghcrts"])
+            self.assertEqual(recorded["claim"]["rts_capabilities"], int(count))
+        self.assertEqual(one["summary"]["measured"][one_id]["became"], "flaky")
+        self.assertEqual(four["summary"]["measured"][four_id]["became"], "stable")
+        self.assertEqual(self.cli("show", one["run_id"])["document"]["rts_capabilities"], 1)
+        self.assertIn("-N1", Path(one["report"]).read_text())
+        refused = self.cli("flake", "--target", one_id, "--rts-capabilities", "4", code=2)
+        self.assertIn("cannot override it", refused["error"])
+
+        rerun = self.cli("flake", "--target", one_id, "--trials", "1")
+        self.assertEqual(rerun["summary"]["measured"].keys(), {one_id})
+        self.cli("note", one_id, "--text", "setting-specific note")
+        self.cli("mark", four_id, "--status", "flaky", "--reason", "setting-specific mark")
+        resolved = self.cli("resolve-arg", "deflake", one_id)
+        self.assertEqual(resolved["target"]["id"], one_id)
+        selected = self.cli("deflake", "select", "--owner", "rts-owner-1")
+        self.assertEqual(selected["test"]["id"], one_id)
+        self.cli("deflake", "pr", one_id, "--owner", "rts-owner-1", "--pr", "https://example.test/1")
+        other = self.cli("deflake", "select", "--owner", "rts-owner-2")
+        self.assertEqual(other["test"]["id"], four_id)
+        self.cli("deflake", "release", four_id, "--owner", "rts-owner-2", "--reason", "check setting claim")
+
+    def test_suite_rts_option_is_overridden_by_the_chosen_capability(self):
+        adapter = (self.work / ".quruntul" / "adapter.py").read_text()
+        adapter = adapter.replace("rts_capabilities=[1, 4])", "rts=[\"-N2\"], rts_capabilities=[1, 4])")
+        (self.work / ".quruntul" / "adapter.py").write_text(adapter)
+        git(self.work, "commit", "-qam", "declare a suite RTS default")
+        git(self.work, "push", "-q", "origin", "master")
+        result = self.cli("flake", "--target", "unit", "--rts-capabilities", "4", "--trials", "1")
+        trial = self.cli("show", result["run_id"])["trials"][0]["document"]
+        argv = trial["command"]
+        options = argv[argv.index("+RTS") + 1:argv.index("-RTS")]
+        self.assertEqual(options, ["-N2", "-N4"])
+        record = json.loads((Path(result["result"]).parent / "fake-hspec-record.json").read_text())
+        self.assertEqual(record["argv"][record["argv"].index("+RTS") + 1:record["argv"].index("-RTS")], options)
+
+    def test_suite_without_a_capability_declaration_accepts_any_positive_count(self):
+        adapter = (self.work / ".quruntul" / "adapter.py").read_text()
+        (self.work / ".quruntul" / "adapter.py").write_text(adapter.replace("rts_capabilities=[1, 4]", "rts_capabilities=[]"))
+        self.push("allow arbitrary RTS counts")
+        result = self.cli("flake", "--target", "unit", "--rts-capabilities", "7", "--trials", "1")
+        trial = self.cli("show", result["run_id"])["trials"][0]["document"]
+        argv = trial["command"]
+        self.assertEqual(argv[argv.index("+RTS") + 1:argv.index("-RTS")], ["-N7"])
+
+    def test_candidate_setting_batch_records_evidence_without_changing_status(self):
+        import hashlib
+
+        self.spec(dict(examples=["A/one"], fail_rts={"A/one": {"1": [1]}}))
+        self.push("setting baseline")
+        self.cli("flake", "--target", "unit", "--trials", "1")
+        row_id = f"unit::rts-1::{hashlib.sha256(b'A/one').hexdigest()}"
+        baseline = self.cli("flake", "--target", "unit::A/one", "--rts-capabilities", "1", "--trials", "3")
+        self.assertEqual(baseline["summary"]["measured"][row_id]["became"], "flaky")
+        self.assertEqual(self.statuses()[row_id], "flaky")
+        git(self.work, "checkout", "-q", "-b", "candidate")
+        self.spec(dict(examples=["A/one"]))
+        git(self.work, "commit", "-qam", "candidate passes at -N1")
+        git(self.work, "push", "-q", "origin", "candidate")
+        candidate = self.cli("flake", "--target", row_id, "--ref", "candidate", "--trials", "3")
+        self.assertTrue(candidate["candidate"])
+        self.assertEqual(self.statuses()[row_id], "flaky")
+
+    def test_rts_option_refusals_and_declared_settings_do_not_change_default_selection(self):
+        self.spec(dict(examples=["A/one", "A/two"]))
+        self.push("two examples for setting refusals")
+        self.cli("flake", "--target", "unit", "--trials", "1")
+        self.cli("flake", "--target", "probe-a", "--trials", "1")
+        before = len(self.cli("runs"))
+        refused = self.cli("flake", "--rts-capabilities", "1", code=2)
+        self.assertIn("explicit --target", refused["error"])
+        refused = self.cli("flake", "--target", "unit", "--rts-capabilities", "2", code=2)
+        self.assertIn("not declared", refused["error"])
+        refused = self.cli("flake", "--target", "unit", "--rts-capabilities", "0", code=2)
+        self.assertIn("positive integer", refused["error"])
+        refused = self.cli("flake", "--target", "probe-a", "--rts-capabilities", "1", code=2)
+        self.assertIn("Hspec suite", refused["error"])
+        parser_error = io.StringIO()
+        with redirect_stderr(parser_error), self.assertRaises(SystemExit) as raised:
+            cli.parser().parse_args(["shakedown", "--rts-capabilities", "1"])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("unrecognized arguments", parser_error.getvalue())
+        self.assertEqual(len(self.cli("runs")), before)
+
+        self.cli("flake", "--target", "unit", "--rts-capabilities", "1", "--trials", "1")
+        self.cli("flake", "--target", "unit", "--rts-capabilities", "4", "--trials", "1")
+        self.spec(dict(examples=["A/one", "A/two", "A/three"]))
+        self.push("one new default test")
+        automatic = self.cli("flake")
+        self.assertEqual(automatic["summary"]["selected"], 1, automatic["summary"]["measured"])
+        self.assertEqual(list(automatic["summary"]["measured"]), ["unit::A/three"])
+
     def test_flake_measures_each_test_once_then_only_new_ones(self):
         first = self.cli("flake")
         self.assertEqual((first["outcome"], first["suite"]), ("complete", "unit"))
@@ -146,7 +277,7 @@ class LabTests(LabFixture):
     def test_a_large_suite_is_measured_in_slices(self):
         adapter = (self.work / ".quruntul" / "adapter.py").read_text()
         (self.work / ".quruntul" / "adapter.py").write_text(
-            adapter.replace("batch_seconds=300, priority=20)", "batch_seconds=300, priority=20, batch_tests=2)"))
+            adapter.replace("rts_capabilities=[1, 4])", "batch_tests=2, rts_capabilities=[1, 4])"))
         git(self.work, "commit", "-qam", "slice the unit suite")
         git(self.work, "push", "-q", "origin", "master")
         first = self.cli("flake")
@@ -412,6 +543,12 @@ class HookTests(LabTests):
         seeded = [e for e in self.cli("tests") if e["id"] == "events::beta"][0]
         self.assertEqual(seeded["trials"], 0)
 
+    def test_capability_setting_is_refused_for_exit_suite_before_a_run(self):
+        before = len(self.cli("runs"))
+        refused = self.cli("flake", "--target", "legacy", "--rts-capabilities", "1", code=2)
+        self.assertIn("Hspec suite", refused["error"])
+        self.assertEqual(len(self.cli("runs")), before)
+
     # The inherited end-to-end examples assume the plain fixture adapter.
     test_flake_measures_each_test_once_then_only_new_ones = None
     test_a_crash_is_never_counted_as_a_pass = None
@@ -425,3 +562,8 @@ class HookTests(LabTests):
     test_child_output_does_not_hide_examples_and_an_unreported_one_is_observed = None
     test_a_test_failing_every_trial_is_failing_and_requeued_when_its_inputs_change = None
     test_a_batch_cut_short_is_neither_stable_nor_a_consistent_failure = None
+    test_flake_keeps_each_rts_setting_in_its_own_row_and_records_argv = None
+    test_suite_rts_option_is_overridden_by_the_chosen_capability = None
+    test_suite_without_a_capability_declaration_accepts_any_positive_count = None
+    test_candidate_setting_batch_records_evidence_without_changing_status = None
+    test_rts_option_refusals_and_declared_settings_do_not_change_default_selection = None

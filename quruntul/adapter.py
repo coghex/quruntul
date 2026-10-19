@@ -36,6 +36,7 @@ class Suite:
     batch_seconds: int = 7200
     identity: str = ""  # digest of every input that can change the suite's behaviour
     rts: list[str] = field(default_factory=list)
+    rts_capabilities: list[int] = field(default_factory=list)
     checks: list[str] = field(default_factory=list)  # command probes: declared stable check ids
     priority: int = 10
     # At most this many unmeasured tests per flake batch (0: no limit). A large
@@ -62,12 +63,19 @@ class Suite:
             self.checks = ["run"]
         if not self.identity:
             raise LabError(f"{self.id}: a suite needs a source identity")
+        if (not isinstance(self.rts_capabilities, list) or any(type(value) is not int or value < 1
+                                                               for value in self.rts_capabilities)
+                or len(set(self.rts_capabilities)) != len(self.rts_capabilities)):
+            raise LabError(f"{self.id}: rts_capabilities must be a list of distinct positive integers")
         if self.batch_tests < 0:
             raise LabError(f"{self.id}: batch_tests must be zero (no limit) or positive")
         return self
 
     def record(self) -> dict:
-        return asdict(self)
+        document = asdict(self)
+        if not self.rts_capabilities:
+            document.pop("rts_capabilities")
+        return document
 
 
 @dataclass

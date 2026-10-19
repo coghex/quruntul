@@ -9,6 +9,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import json
 import os
+import hashlib
 from pathlib import Path
 import sqlite3
 import time
@@ -16,7 +17,7 @@ import uuid
 
 from quruntul.common import LabError, text_hash, utc
 
-SCHEMA = 2
+SCHEMA = 3
 STATUSES = ("new", "stable", "flaky", "failing", "fixing", "pending", "retired")
 DEFAULT_LEASE = 600
 
@@ -83,10 +84,25 @@ MIGRATIONS = {
             source_path TEXT, size INTEGER, destination TEXT, sha256 TEXT,
             import_id TEXT NOT NULL REFERENCES imports(id), document TEXT NOT NULL)""",
     ),
+    3: (
+        "ALTER TABLE tests ADD COLUMN rts_capabilities INTEGER",
+        """CREATE TABLE rts_settings (
+            suite_id TEXT NOT NULL, capabilities INTEGER NOT NULL, identity TEXT, revision TEXT, enumerated TEXT,
+            PRIMARY KEY(suite_id, capabilities))""",
+    ),
 }
 
 
+def test_id(suite: str, path: str, rts_capabilities: int | None = None) -> str:
+    if rts_capabilities is None:
+        return f"{suite}::{path}"
+    encoded = hashlib.sha256(path.encode("utf-8")).hexdigest()
+    return f"{suite}::rts-{rts_capabilities}::{encoded}"
+
+
 class State:
+    test_id = staticmethod(test_id)
+
     def __init__(self, directory: Path, migrate: bool = True):
         """Open the ledger, creating or migrating it to this schema.
 
@@ -246,7 +262,8 @@ class State:
             else:
                 self.db.execute("INSERT INTO suites(id,document) VALUES(?,?)", (suite["id"], json.dumps(suite, sort_keys=True)))
 
-    def enumerated(self, suite: dict, identity: str, revision: str, paths: list[str], upstream: bool, excluded: dict[str, int] | None = None) -> dict:
+    def enumerated(self, suite: dict, identity: str, revision: str, paths: list[str], upstream: bool,
+                   excluded: dict[str, int] | None = None, rts_capabilities: int | None = None) -> dict:
         """Record what the suite contains at a revision. New paths become `new`.
 
         Only an enumeration of the upstream head retires tests that vanished, and
@@ -257,38 +274,64 @@ class State:
         with self.transaction():
             self.declare_suite(suite)
             excluded = excluded or {}
-            present = {f"{suite['id']}::{p}": p for p in [*paths, *excluded]}
-            known = {r["id"]: dict(r) for r in self.db.execute("SELECT * FROM tests WHERE suite=?", (suite["id"],))}
-            for test_id, path in present.items():
+            present = {test_id(suite["id"], p, rts_capabilities): p for p in [*paths, *excluded]}
+            if len(present) != len(paths) + len(excluded):
+                raise LabError(f"{suite['id']}: per-setting test identity collision")
+            other_ids = {r["id"] for r in self.db.execute(
+                "SELECT id FROM tests WHERE rts_capabilities IS NOT ?", (rts_capabilities,))}
+            incoming_default_ids = {f"{suite['id']}::{path}" for path in [*paths, *excluded]}
+            if set(present) & other_ids or (rts_capabilities is not None and set(present) & incoming_default_ids):
+                raise LabError(f"{suite['id']}: per-setting test identity collides with another test id")
+            known = {r["id"]: dict(r) for r in self.db.execute(
+                "SELECT * FROM tests WHERE suite=? AND rts_capabilities IS ?", (suite["id"], rts_capabilities))}
+            for identifier, path in present.items():
                 if path in excluded:
                     continue  # Present, but every column and status event stays untouched.
-                row = known.get(test_id)
+                row = known.get(identifier)
                 if row is None:
                     self.db.execute(
-                        "INSERT INTO tests(id,suite,path,kind,status,first_seen,last_seen,status_changed) VALUES(?,?,?,?,?,?,?,?)",
-                        (test_id, suite["id"], path, suite["kind"], "new", now, now, now))
-                    added.append(test_id)
+                        "INSERT INTO tests(id,suite,path,kind,status,first_seen,last_seen,status_changed,rts_capabilities) "
+                        "VALUES(?,?,?,?,?,?,?,?,?)",
+                        (identifier, suite["id"], path, suite["kind"], "new", now, now, now, rts_capabilities))
+                    added.append(identifier)
                 elif row["status"] == "retired" and upstream:
-                    self._status(test_id, "new", "reappeared at the upstream head", {})
-                    self.db.execute("UPDATE tests SET last_seen=? WHERE id=?", (now, test_id))
-                    revived.append(test_id)
+                    self._status(identifier, "new", "reappeared at the upstream head", {})
+                    self.db.execute("UPDATE tests SET last_seen=? WHERE id=?", (now, identifier))
+                    revived.append(identifier)
                 else:
-                    self.db.execute("UPDATE tests SET last_seen=?, kind=? WHERE id=?", (now, suite["kind"], test_id))
-            if upstream:
+                    self.db.execute("UPDATE tests SET last_seen=?, kind=? WHERE id=?", (now, suite["kind"], identifier))
+            if upstream and rts_capabilities is not None:
+                previous = self.db.execute(
+                    "SELECT identity FROM rts_settings WHERE suite_id=? AND capabilities=?",
+                    (suite["id"], rts_capabilities)).fetchone()
+                if previous and previous["identity"] and previous["identity"] != identity:
+                    for identifier, row in known.items():
+                        if row["status"] in ("pending", "failing") and identifier in present and row["path"] not in excluded:
+                            self._status(identifier, "new", f"suite inputs changed since it was {row['status']}",
+                                         {"revision": revision})
+                for identifier, row in known.items():
+                    if identifier not in present and row["status"] != "retired":
+                        self._status(identifier, "retired", "no longer enumerated at the upstream head", {"revision": revision})
+                        retired.append(identifier)
+                self.db.execute("INSERT INTO rts_settings(suite_id,capabilities,identity,revision,enumerated) "
+                                "VALUES(?,?,?,?,?) ON CONFLICT(suite_id,capabilities) DO UPDATE SET "
+                                "identity=excluded.identity, revision=excluded.revision, enumerated=excluded.enumerated",
+                                (suite["id"], rts_capabilities, identity, revision, now))
+            elif upstream:
                 # A test that was pending everywhere, or failed every trial, is
                 # queued again once its suite's inputs change: it may run in
                 # this environment now, or the harness or code that failed it
                 # may have been repaired.
                 previous = self.db.execute("SELECT identity FROM suites WHERE id=?", (suite["id"],)).fetchone()
                 if previous and previous["identity"] and previous["identity"] != identity:
-                    for test_id, row in known.items():
-                        if row["status"] in ("pending", "failing") and test_id in present and row["path"] not in excluded:
-                            self._status(test_id, "new", f"suite inputs changed since it was {row['status']}",
+                    for identifier, row in known.items():
+                        if row["status"] in ("pending", "failing") and identifier in present and row["path"] not in excluded:
+                            self._status(identifier, "new", f"suite inputs changed since it was {row['status']}",
                                          {"revision": revision})
-                for test_id, row in known.items():
-                    if test_id not in present and row["status"] != "retired":
-                        self._status(test_id, "retired", "no longer enumerated at the upstream head", {"revision": revision})
-                        retired.append(test_id)
+                for identifier, row in known.items():
+                    if identifier not in present and row["status"] != "retired":
+                        self._status(identifier, "retired", "no longer enumerated at the upstream head", {"revision": revision})
+                        retired.append(identifier)
                 self.db.execute("UPDATE suites SET identity=?, revision=?, enumerated=? WHERE id=?",
                                 (identity, revision, now, suite["id"]))
             if added:
@@ -303,11 +346,20 @@ class State:
         if status:
             query += " AND status=?"
             args.append(status)
-        return [dict(r) for r in self.db.execute(query + " ORDER BY id", args)]
+        rows = [dict(r) for r in self.db.execute(query + " ORDER BY id", args)]
+        for row in rows:
+            if row["rts_capabilities"] is None:
+                row.pop("rts_capabilities")
+        return rows
 
     def test(self, test_id: str) -> dict | None:
         row = self.db.execute("SELECT * FROM tests WHERE id=?", (test_id,)).fetchone()
-        return dict(row) if row else None
+        if row is None:
+            return None
+        result = dict(row)
+        if result["rts_capabilities"] is None:
+            result.pop("rts_capabilities")
+        return result
 
     def _status(self, test_id: str, status: str, reason: str, evidence: dict) -> None:
         if status not in STATUSES:

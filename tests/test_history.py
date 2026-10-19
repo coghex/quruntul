@@ -600,7 +600,7 @@ class FreshRepositoryTests(HistoryFixture):
         log.write_text("log of r4\n")
         self.supply(legacy)
         self.assertEqual(self.importing()["outcome"], "imported")
-        self.assertEqual(self.ledger()["version"], 2)
+        self.assertEqual(self.ledger()["version"], 3)
         self.assertEqual(len(self.ledger()["rows"]["imports"]), 1)
 
     def test_a_failure_inside_the_first_commit_leaves_no_ledger_behind(self):
@@ -747,6 +747,8 @@ class MigrationTests(HistoryFixture):
         try:
             for table in ("evidence", "imported", "imports"):
                 db.execute(f"DROP TABLE {table}")
+            db.execute("DROP TABLE rts_settings")
+            db.execute("ALTER TABLE tests DROP COLUMN rts_capabilities")
             for statement in extra:
                 db.execute(statement)
             db.execute("PRAGMA user_version=1")
@@ -759,8 +761,10 @@ class MigrationTests(HistoryFixture):
         before = self.downgrade()
         self.cli("tests")
         after = self.ledger()
-        self.assertEqual(after["version"], 2)
-        self.assertEqual({k: v for k, v in after["rows"].items() if k in before["rows"]}, before["rows"])
+        self.assertEqual(after["version"], 3)
+        migrated = {k: v for k, v in after["rows"].items() if k in before["rows"]}
+        migrated["tests"] = [row[:-1] for row in migrated["tests"]]
+        self.assertEqual(migrated, before["rows"])
         self.assertEqual({k: after["rows"][k] for k in ("imports", "imported", "evidence")},
                          dict(imports=[], imported=[], evidence=[]))
         self.cli("tests")
@@ -770,7 +774,7 @@ class MigrationTests(HistoryFixture):
         before = self.downgrade("CREATE TABLE imports (stray TEXT)")
         files = self.files()
         result = self.cli("tests", code=2)
-        self.assertIn("cannot migrate the ledger from schema 1 to 2", result["error"])
+        self.assertIn("cannot migrate the ledger from schema 1 to 3", result["error"])
         self.assertUntouched(before, files)
 
     def test_a_refused_or_interrupted_import_leaves_an_older_schema_unmigrated(self):
@@ -789,9 +793,11 @@ class MigrationTests(HistoryFixture):
         self.supply(legacy)
         self.assertEqual(self.importing()["outcome"], "imported")
         after = self.ledger()
-        self.assertEqual(after["version"], 2)
+        self.assertEqual(after["version"], 3)
         for table, rows in before["rows"].items():
-            if table in ("tests", "trials", "results", "claims", "deferrals", "metadata"):
+            if table == "tests":
+                self.assertEqual([r[:-1] for r in after["rows"][table]], rows, table)
+            elif table in ("trials", "results", "claims", "deferrals", "metadata"):
                 self.assertEqual(after["rows"][table], rows, table)
             elif table == "suites":  # only the matched suites' freshness changes
                 self.assertEqual([r[:5] for r in after["rows"][table]], [r[:5] for r in rows])

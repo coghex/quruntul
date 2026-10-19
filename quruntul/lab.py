@@ -174,8 +174,12 @@ class Lab:
     # -- flake --------------------------------------------------------------
 
     def flake(self, owner: str, target: str | None = None, ref: str | None = None,
-              trials: int | None = None) -> dict:
+              trials: int | None = None, rts_capabilities: int | None = None) -> dict:
         """One flake batch: the next suite with unmeasured tests, or an explicit target."""
+        if rts_capabilities is not None and (type(rts_capabilities) is not int or rts_capabilities < 1):
+            raise LabError("RTS capability count must be a positive integer")
+        if rts_capabilities is not None and not target:
+            raise LabError("an RTS capability count requires an explicit --target")
         self.recover()
         source_ref, revision, upstream = self.resolve(ref)
         checkout = self.checkout(revision)
@@ -188,16 +192,31 @@ class Lab:
         explicit_test = None
         if target:
             test = self.state.test(target)
+            if test and test.get("rts_capabilities") is not None:
+                if rts_capabilities is not None and rts_capabilities != test["rts_capabilities"]:
+                    raise LabError(f"{target} records -N{test['rts_capabilities']}; cannot override it with -N{rts_capabilities}")
+                rts_capabilities = test["rts_capabilities"]
             suite_id = test["suite"] if test else target
             if suite_id not in by_id:
                 raise LabError(f"{target!r} is neither a suite nor a known test at {revision[:12]}")
+            suite = by_id[suite_id]
+            if rts_capabilities is not None:
+                if suite.framework != "hspec":
+                    raise LabError(f"{suite.id}: RTS capability settings require an Hspec suite")
+                if suite.rts_capabilities and rts_capabilities not in suite.rts_capabilities:
+                    raise LabError(f"{suite.id}: -N{rts_capabilities} is not declared; allowed: "
+                                   + ", ".join(f"-N{k}" for k in suite.rts_capabilities))
             explicit_test = target if test else None
+            if test and rts_capabilities is not None and test.get("rts_capabilities") is None:
+                explicit_test = self.state.test_id(suite_id, test["path"], rts_capabilities)
             order, skipped = [(by_id[suite_id], "explicit")], {}
             if suite_id in deferred:
                 raise LabError(f"{suite_id} is deferred: {deferred[suite_id]['reason']}")
         else:
             tests = {}
             for row in self.state.tests():
+                if row.get("rts_capabilities") is not None:
+                    continue
                 tests.setdefault(row["suite"], []).append(row)
             merged = self.merged_fixing()
             ledger = {s["id"]: s for s in self.state.suites()}
@@ -205,7 +224,8 @@ class Lab:
         trials = trials or int(adapters.option(adapter, "flake_trials", DEFAULT_TRIALS))
         for suite, why in order:
             outcome = self._flake_suite(adapter, suite, why, owner, checkout, revision, source_ref, upstream,
-                                        trials, explicit_test, explicit=target is not None)
+                                        trials, explicit_test, explicit=target is not None,
+                                        rts_capabilities=rts_capabilities)
             if outcome["outcome"] != "nothing-new":
                 outcome["skipped"] = skipped
                 return outcome
@@ -216,21 +236,28 @@ class Lab:
     def merged_fixing(self) -> set[str]:
         merged = set()
         for row in self.state.tests(status="fixing"):
+            if row.get("rts_capabilities") is not None:
+                continue
             if row["pr"] and _pr_merged(self.root, row["pr"]):
                 merged.add(row["id"])
         return merged
 
     def _flake_suite(self, adapter, suite, why, owner, checkout, revision, source_ref, upstream, trials,
-                     explicit_test, explicit) -> dict:
-        blocker = self.state.claim("suite:" + suite.id, owner, "flake", dict(revision=revision))
+                     explicit_test, explicit, rts_capabilities=None) -> dict:
+        claim_document = dict(revision=revision)
+        if rts_capabilities is not None:
+            claim_document["rts_capabilities"] = rts_capabilities
+        blocker = self.state.claim("suite:" + suite.id, owner, "flake", claim_document)
         if blocker:
             return dict(outcome="busy", suite=suite.id, holder=blocker["owner"])
         if suite.desktop and self.state.claim("desktop", owner, "flake", dict(suite=suite.id)):
             self.state.release(owner, "suite:" + suite.id)
             return dict(outcome="busy", suite=suite.id, reason="desktop in use")
-        run_id = self.state.begin("flake", suite.id, revision, source_ref, upstream, dict(
-            suite=suite.record(), reason=why, trials=trials, harness=self.harness(), owner=owner,
-            platform=platform.system(), explicit_test=explicit_test))
+        run_document = dict(suite=suite.record(), reason=why, trials=trials, harness=self.harness(), owner=owner,
+                            platform=platform.system(), explicit_test=explicit_test)
+        if rts_capabilities is not None:
+            run_document["rts_capabilities"] = rts_capabilities
+        run_id = self.state.begin("flake", suite.id, revision, source_ref, upstream, run_document)
         artifacts = self.directory / "runs" / run_id
         artifacts.mkdir(parents=True, exist_ok=True)
         self.log(f"flake {suite.id} ({why}) at {revision[:12]}; evidence: {artifacts}")
@@ -239,14 +266,17 @@ class Lab:
         try:
             prepared = self.prepare(adapter, suite, checkout, revision, run_id, owner)
             paths, duplicates = self._enumerate(suite, prepared, run_id, owner, artifacts)
-            change = self.state.enumerated(suite.record(), suite.identity, revision, paths, upstream, duplicates)
-            self._seed(suite, change["added"])
-            rows = {r["id"]: r for r in self.state.tests(suite=suite.id) if r["path"] not in duplicates}
+            change = self.state.enumerated(suite.record(), suite.identity, revision, paths, upstream, duplicates,
+                                          rts_capabilities)
+            if rts_capabilities is None:
+                self._seed(suite, change["added"])
+            rows = {r["id"]: r for r in self.state.tests(suite=suite.id)
+                    if r["path"] not in duplicates and r.get("rts_capabilities") == rts_capabilities}
             merged = self.merged_fixing()
             if explicit_test:
                 selected = [explicit_test] if explicit_test in rows else []
             else:
-                order = {f"{suite.id}::{p}": n for n, p in enumerate(paths)}
+                order = {self.state.test_id(suite.id, p, rts_capabilities): n for n, p in enumerate(paths)}
                 verify = [i for i, r in rows.items() if r["status"] == "fixing" and i in merged]
                 fresh = sorted((i for i, r in rows.items() if r["status"] == "new"), key=lambda i: order.get(i, 1 << 30))
                 if suite.batch_tests:
@@ -254,15 +284,19 @@ class Lab:
                 selected = verify + fresh
                 if explicit and not selected:
                     selected = [i for i, r in rows.items() if r["status"] != "retired"]
-            self.state.update_run(run_id, self.state.run(run_id)["document"] | dict(
+            run_update = dict(
                 prepared=dict(argv=prepared.argv, cwd=prepared.cwd, provenance=prepared.provenance,
                               wrapper=prepared.wrapper),
-                enumerated=len(paths), duplicates=duplicates, added=len(change["added"]), selected=selected))
+                enumerated=len(paths), duplicates=duplicates, added=len(change["added"]), selected=selected)
+            if rts_capabilities is not None:
+                run_update["rts_capabilities"] = rts_capabilities
+            self.state.update_run(run_id, self.state.run(run_id)["document"] | run_update)
             if not selected:
                 state_name = "nothing-new"
                 return dict(outcome="nothing-new", suite=suite.id)
             whole = not duplicates and len(selected) == len([r for r in rows.values() if r["status"] != "retired"])
-            state_name, detail = self._trials(suite, prepared, run_id, owner, artifacts, selected, trials, whole, duplicates)
+            state_name, detail = self._trials(suite, prepared, run_id, owner, artifacts, selected, trials, whole,
+                                               duplicates, rts_capabilities)
             measured = self._decide(suite, run_id, revision, selected, upstream, explicit, trials)
         except LabError as error:
             state_name, detail = "blocked", str(error)
@@ -310,7 +344,8 @@ class Lab:
             raise LabError(f"enumeration found no examples; see {result['log']}")
         return paths, duplicates
 
-    def _trials(self, suite, prepared, run_id, owner, artifacts, selected, trials, whole, duplicates=None):
+    def _trials(self, suite, prepared, run_id, owner, artifacts, selected, trials, whole, duplicates=None,
+                rts_capabilities=None):
         deadline = time.monotonic() + suite.batch_seconds
         paths = [self.state.test(t)["path"] for t in selected]
         state_name, detail = "complete", None
@@ -318,7 +353,8 @@ class Lab:
             if deadline - time.monotonic() < suite.trial_seconds:
                 return "budget-exhausted", f"batch budget left room for {number - 1} of {trials} trials"
             result, failure_report, trial = self._run_trial(suite, prepared, run_id, owner, artifacts, number,
-                                                            None if whole else paths)
+                                                            None if whole else paths,
+                                                            rts_capabilities=rts_capabilities)
             outcomes = self._outcomes(suite, result, selected, failure_report, Path(trial["prefix"] + ".checks.json"),
                                       trial, duplicates)
             self.state.finish_trial(run_id, number, result, outcomes)
@@ -329,7 +365,8 @@ class Lab:
                 return ("interrupted" if result["outcome"] == "interrupted" else "blocked"), result["outcome"]
         return state_name, detail
 
-    def _run_trial(self, suite, prepared, run_id, owner, artifacts, number, paths, record=None):
+    def _run_trial(self, suite, prepared, run_id, owner, artifacts, number, paths, record=None,
+                   rts_capabilities=None):
         """Launch one trial as every lane does: the prepared argv, working directory, environment and
         wrapper, the trial_env hook, and for Hspec exact selection of `paths` (None: the whole suite).
 
@@ -338,6 +375,8 @@ class Lab:
         name = f"trial-{number:04}"
         seed = random.SystemRandom().randrange(1, 2 ** 31)
         trial = dict(number=number, prefix=str(artifacts / name), seed=seed)
+        if rts_capabilities is not None:
+            trial["rts_capabilities"] = rts_capabilities
         env = dict(prepared.environment, QURUNTUL_TRIAL=str(number), QURUNTUL_SEED=str(seed),
                    QURUNTUL_PROBE_RESULT=str(artifacts / f"{name}.checks.json"),
                    QURUNTUL_TRIAL_PREFIX=str(artifacts / name))
@@ -345,7 +384,9 @@ class Lab:
         if suite.framework == "hspec":
             failure_report = artifacts / f"{name}.failures"
             argv = prepared.wrapper + _launch(prepared, hspec.trial_argv(
-                prepared.argv[0], paths, seed, str(failure_report), suite.rts, prepared.argv[1:]))
+                prepared.argv[0], paths, seed, str(failure_report),
+                [*suite.rts, *( [f"-N{rts_capabilities}"] if rts_capabilities is not None else [])],
+                prepared.argv[1:]))
         else:
             failure_report = None
             argv = prepared.wrapper + prepared.argv
@@ -518,7 +559,10 @@ class Lab:
         observations = []
         if summary["duplicates"]:
             observations.append(dict(
-                title=f"duplicated Hspec paths in {suite.id}", area=suite.area or suite.id,
+                title=f"duplicated Hspec paths in {suite.id}" +
+                      (f" at -N{run['document']['rts_capabilities']}"
+                       if run['document'].get("rts_capabilities") is not None else ""),
+                area=suite.area or suite.id,
                 kind="harness", tests="none",
                 evidence="; ".join(filter(None, [f"`runs/{run_id}/enumerate.log`",
                                                 _duplicate_evidence(summary["duplicate_failures"])])),
@@ -532,7 +576,9 @@ class Lab:
             logs = ", ".join(f"`runs/{run_id}/trial-{n:04}.log`"
                              for n in summary["measured"][failing[0]]["failing_trials"][:5])
             observations.append(dict(
-                title=f"{len(failing)} tests of {suite.id} failed every trial",
+                title=f"{len(failing)} tests of {suite.id}" +
+                      (f" at -N{run['document']['rts_capabilities']}" if run['document'].get("rts_capabilities") else "") +
+                      " failed every trial",
                 area=suite.area or suite.id, kind="uncertain",
                 tests=", ".join(failing[:5]) + (f" and {len(failing) - 5} more" if len(failing) > 5 else ""),
                 evidence=f"{logs}; run {run_id}",
@@ -548,7 +594,9 @@ class Lab:
                 continue
             logs = ", ".join(f"`runs/{run_id}/trial-{n:04}.log`" for n in m["failing_trials"][:5])
             observations.append(dict(
-                title=f"{test_id} failed {m['failures']} of {m['complete']} trials",
+                title=f"{test_id}" +
+                      (f" at -N{run['document']['rts_capabilities']}" if run['document'].get("rts_capabilities") else "") +
+                      f" failed {m['failures']} of {m['complete']} trials",
                 area=suite.area or suite.id, kind="flaky-test", tests=test_id,
                 evidence=f"{logs}; seeds in the trial results; run {run_id}",
                 expected="every trial passes",
@@ -560,7 +608,9 @@ class Lab:
             # A trial that ran to completion yet named no result for a selected
             # test: the log could not be read for it, so it stays unmeasured.
             observations.append(dict(
-                title=f"{len(unreported)} selected tests of {suite.id} went unreported by a completed trial",
+                title=f"{len(unreported)} selected tests of {suite.id}" +
+                      (f" at -N{run['document']['rts_capabilities']}" if run['document'].get("rts_capabilities") else "") +
+                      " went unreported by a completed trial",
                 area=suite.area or suite.id, kind="harness", tests=", ".join(unreported[:5]) +
                 (f" and {len(unreported) - 5} more" if len(unreported) > 5 else ""),
                 evidence=f"`runs/{run_id}/trial-*.log`; outcome `missing` in the run's results",
@@ -569,11 +619,15 @@ class Lab:
                 confidence="high", follow_up="inspect the trial log's Hspec output against the enumeration"))
         if summary["interpretation"] == "blocked":
             observations.append(dict(
-                title=f"flake batch of {suite.id} blocked", area=suite.area or suite.id, kind="harness",
+                title=f"flake batch of {suite.id}" +
+                      (f" at -N{run['document']['rts_capabilities']}" if run['document'].get("rts_capabilities") else "") +
+                      " blocked", area=suite.area or suite.id, kind="harness",
                 tests="none", evidence=f"`runs/{run_id}/` logs; {detail}", expected="the suite builds and runs",
                 observed=str(detail), confidence="medium", follow_up="inspect the build/enumeration log"))
         facts = "\n".join([
             f"- Suite: `{suite.id}` ({suite.kind}, {suite.framework}); selected because: {run['document']['reason']}",
+            *([f"- RTS capability count: `-N{run['document']['rts_capabilities']}`"]
+              if run['document'].get("rts_capabilities") is not None else []),
             f"- Trials: {summary['counts']} of {summary['planned_trials']} planned; selected tests: {summary['selected']}",
             f"- Became stable: {sum(1 for m in summary['measured'].values() if m['became'] == 'stable')}; "
             f"became flaky: {len(summary['newly_flaky'])}; became failing: {len(summary['newly_failing'])}",
@@ -761,7 +815,8 @@ class Lab:
 
     def _drift(self, suite, tests: dict[str, str]) -> dict:
         """How the enumeration differs from the ledger. Reported, never recorded."""
-        live = {r["id"] for r in self.state.tests(suite=suite.id) if r["status"] != "retired"}
+        live = {r["id"] for r in self.state.tests(suite=suite.id)
+                if r["status"] != "retired" and r.get("rts_capabilities") is None}
         return dict(unrecorded=[t for t in tests if t not in live], unlisted=sorted(live - set(tests)))
 
     def _read_outcomes(self, suite, result, tests, failure_report, trial, duplicates=None) -> dict[str, str]:
@@ -996,7 +1051,8 @@ class Lab:
             else:
                 self.state.enumerated(suite.record(), suite.identity, revision, list(suite.checks), upstream)
             selected = [r["id"] for r in self.state.tests(suite=suite.id)
-                        if r["status"] != "retired" and r["path"] not in duplicates]
+                        if r["status"] != "retired" and r["path"] not in duplicates
+                        and r.get("rts_capabilities") is None]
             self.state.update_run(run_id, self.state.run(run_id)["document"] | dict(
                 prepared=dict(argv=prepared.argv, cwd=prepared.cwd, provenance=prepared.provenance,
                               wrapper=prepared.wrapper), selected=len(selected), duplicates=duplicates))
@@ -1076,6 +1132,11 @@ class Lab:
             lines.append(f"| {suite['id']} | {c['new']} | {c['stable']} | {c['flaky']} | {c['failing']} | {c['fixing']} | "
                          f"{c['pending']} | {c['retired']} | {suite['enumerated'] or '—'} | "
                          f"{suite['last_test_run'] or '—'} |")
+        lines += ["", "## Tests by setting", "", "| Test | RTS setting | Status | Failures / trials |",
+                  "|---|---|---|---|"]
+        for row in tests:
+            setting = f"-N{row['rts_capabilities']}" if row.get("rts_capabilities") is not None else "default"
+            lines.append(f"| `{row['id']}` | {setting} | {row['status']} | {row['failures']}/{row['trials']} |")
         lines += ["", "## Flaky, failing and fixing", "", "| Test | Status | Failures / trials | Last failure | PR |",
                   "|---|---|---|---|---|"]
         for row in tests:

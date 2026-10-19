@@ -55,6 +55,8 @@ recorded lab failure.
 
 ### 2. Reproduce on the recorded evidence
 
+A per-setting test id already names its `-N` count. Pass that id to `quruntul flake --target` for both baseline and candidate batches; do not translate it to the default test id. A default test measured at a requested count uses `--rts-capabilities <k>` on that explicit target.
+
 Read the failing trials' logs and seeds. Then measure a **baseline** at the
 upstream head:
 
