@@ -188,7 +188,8 @@ timed-out trial and its process outcome is `timeout`. The batch budget admits
 a trial only while the budget left is at least the deadline (not
 `trial_seconds`), except that the first trial is always admitted, so a deadline
 equal to `batch_seconds` runs one trial. The run record (`deadline_seconds`), every trial's result and
-the report's facts name the deadline.
+the report's facts name the deadline; a trial records it when it starts, so a trial that is interrupted
+or closed by stale-run recovery keeps it.
 
 **Strict rule.** Under a deadline a trial is a *failed trial* of the targeted
 test when any of these holds:
