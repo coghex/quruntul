@@ -49,8 +49,8 @@ class RtsSuiteValidationTests(unittest.TestCase):
             with self.subTest(declaration=declaration), self.assertRaises(LabError):
                 suite(rts_capabilities=declaration)
 
-    def test_context_reports_engine_version_050(self):
-        self.assertEqual(Context(Path("."), "revision", None, None).version, (0, 5, 0))
+    def test_context_reports_engine_version_060(self):
+        self.assertEqual(Context(Path("."), "revision", None, None).version, (0, 6, 0))
 
 
 class HspecTests(unittest.TestCase):

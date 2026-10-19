@@ -8,8 +8,11 @@ diagnostics would be), "omit": [examples a run executes but never reports],
 "dry_fail": a message --dry-run prints before exiting 1, "garble": true (write an unreadable
 failure report), "report_dir": true (the failure report path is a directory from the start, so
 reading it fails with an OSError), "leak": true (leave a live child in
-the process group), "stop": {"after": example, "how": "crash" | "hang" | "interrupt"} (stop
-once that example is reported; "interrupt" first sends SIGINT to $FIXTURE_INTERRUPT_PID)}.
+the process group), "stop": {"after": example, "how": "crash" | "hang" | "exit" | "interrupt",
+"trials": [trial numbers; default every trial]} (stop once that example is reported; "exit" exits 3,
+"interrupt" first sends SIGINT to $FIXTURE_INTERRUPT_PID), "hang_on": [trial numbers that sleep
+before reporting anything], "sleep_on": {trial number: seconds to wait before reporting, then finish
+normally}, "exit_on": [trial numbers that exit 3 before reporting anything]}.
 $FAKE_HSPEC_SPEC names another spec file, and $FAKE_HSPEC_RECORD a file that receives the
 argv and the FIXTURE_* environment. QURUNTUL_TRIAL names the trial. It honours --dry-run,
 --match, --format=checks, --failure-report, --fail-on=empty and prints the checks
@@ -70,6 +73,12 @@ def main(argv):
         os.makedirs(report, exist_ok=True)
     if trial in spec.get("crash_on", []):
         os.kill(os.getpid(), 9)
+    if not dry and trial in spec.get("hang_on", []):
+        time.sleep(60)
+    if not dry and str(trial) in spec.get("sleep_on", {}):
+        time.sleep(spec["sleep_on"][str(trial)])
+    if not dry and trial in spec.get("exit_on", []):
+        return 3
     chosen = [p for p in spec["examples"] if not patterns or any(pat in "/" + p + "/" for pat in patterns) or (not dry and p in spec.get("also_run", []))]
     if not chosen:
         print("0 examples, 0 failures")
@@ -102,9 +111,11 @@ def main(argv):
         if not dry and spec.get("stray") and path == chosen[0]:
             print(spec["stray"])
         stop = spec.get("stop") or {}
-        if not dry and stop.get("after") == path:
+        if not dry and stop.get("after") == path and trial in stop.get("trials", [trial]):
             if stop["how"] == "crash":
                 os.kill(os.getpid(), 9)
+            if stop["how"] == "exit":
+                return 3
             if stop["how"] == "interrupt":
                 os.kill(int(os.environ["FIXTURE_INTERRUPT_PID"]), signal.SIGINT)
             time.sleep(60)

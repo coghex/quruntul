@@ -1,3 +1,3 @@
 """Quruntul: one local testing lab for flake, probe, playtest and profile work."""
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"

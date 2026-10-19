@@ -61,6 +61,7 @@ quruntul status                         # summary; writes ledger.md
 quruntul flake                          # one batch of the next suite with new tests
 quruntul flake --target SUITE_OR_TEST   # measure that
 quruntul flake --target TEST --rts-capabilities 4  # one isolated -N4 ledger row
+quruntul flake --target TEST --trial-deadline 120  # every trial under a hard 120 s deadline; a timeout, signal kill or nonzero exit counts as a failure of TEST
 quruntul shakedown                      # one trial of every suite that applies here; changes no status
 quruntul shakedown --target SUITE       # just that suite
 quruntul tests --status flaky

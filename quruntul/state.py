@@ -478,6 +478,15 @@ class State:
                 "last_failure=CASE WHEN ?>0 THEN ? ELSE last_failure END, measured_revision=? WHERE id=?",
                 (trials, failures, utc(), outcome, failures, utc(), revision, test_id))
 
+    def baseline(self, test_id: str, run_id: str) -> dict | None:
+        """The latest flake batch at the upstream head, begun before this run, that measured exactly this row."""
+        row = self.db.execute(
+            "SELECT * FROM runs WHERE lane='flake' AND upstream=1 "
+            "AND rowid < (SELECT rowid FROM runs WHERE id=?) "
+            "AND EXISTS (SELECT 1 FROM results WHERE results.run_id=runs.id AND results.test_id=?) "
+            "ORDER BY rowid DESC LIMIT 1", (run_id, test_id)).fetchone()
+        return dict(row) | {"document": json.loads(row["document"])} if row else None
+
     def tested(self, suite_id: str, identity: str) -> None:
         with self.transaction():
             self.db.execute("UPDATE suites SET last_test_run=?, last_test_identity=? WHERE id=?",
