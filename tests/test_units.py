@@ -12,7 +12,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from quruntul import hspec, report, select  # noqa: E402
-from quruntul.adapter import Suite  # noqa: E402
+from quruntul.adapter import Context, Suite  # noqa: E402
 from quruntul.common import LabError  # noqa: E402
 from quruntul.state import State  # noqa: E402
 
@@ -39,6 +39,18 @@ def suite(identity="i1", **changes):
     fields = dict(id="unit", kind="ci", framework="hspec", description="a suite", identity=identity)
     fields.update(changes)
     return Suite(**fields).validate()
+
+
+class RtsSuiteValidationTests(unittest.TestCase):
+    def test_capability_declarations_are_empty_or_distinct_positive_integer_lists(self):
+        self.assertEqual(suite(rts_capabilities=[]).rts_capabilities, [])
+        self.assertEqual(suite(rts_capabilities=[1, 4]).rts_capabilities, [1, 4])
+        for declaration in ([0], [-1], [1, 1], [True], "1,4", None):
+            with self.subTest(declaration=declaration), self.assertRaises(LabError):
+                suite(rts_capabilities=declaration)
+
+    def test_context_reports_engine_version_050(self):
+        self.assertEqual(Context(Path("."), "revision", None, None).version, (0, 5, 0))
 
 
 class HspecTests(unittest.TestCase):
@@ -206,6 +218,63 @@ class LedgerTests(unittest.TestCase):
         with self.assertRaises(LabError):
             self.state.set_status("unit::a", "stable", " ")
 
+    def test_setting_enumeration_isolated_from_default_and_other_settings(self):
+        s = suite().record()
+        self.state.enumerated(s, "i1", "r1", ["A/one"], True)
+        default_id = self.state.test_id("unit", "A/one")
+        self.state.set_status(default_id, "stable", "default verdict")
+        before_default = self.state.test(default_id)
+        one_id = self.state.test_id("unit", "A/one", 1)
+        four_id = self.state.test_id("unit", "A/one", 4)
+        self.state.enumerated(s, "i1", "r1", ["A/one"], True, rts_capabilities=1)
+        self.state.set_status(one_id, "flaky", "one failed")
+        self.state.enumerated(s, "i1", "r1", ["A/one"], True, rts_capabilities=4)
+        self.assertEqual(self.state.test(default_id), before_default)
+        self.assertEqual(self.state.test(one_id)["status"], "flaky")
+        self.assertEqual(self.state.test(four_id)["status"], "new")
+        self.assertEqual(self.state.test(one_id)["path"], self.state.test(four_id)["path"])
+
+    def test_setting_input_changes_and_duplicates_only_affect_that_setting(self):
+        s = suite().record()
+        self.state.enumerated(s, "default-input", "r1", ["A/one"], True)
+        default_id = self.state.test_id("unit", "A/one")
+        self.state.set_status(default_id, "failing", "all trials failed")
+        one_id = self.state.test_id("unit", "A/one", 1)
+        four_id = self.state.test_id("unit", "A/one", 4)
+        self.state.enumerated(s, "input-1", "r1", ["A/one"], True, rts_capabilities=1)
+        self.state.set_status(one_id, "failing", "all trials failed")
+        self.state.enumerated(s, "four-input-1", "r1", ["A/one"], True, rts_capabilities=4)
+        self.state.set_status(four_id, "failing", "all trials failed")
+
+        # Change the default after both settings have independent verdicts.
+        self.state.enumerated(s, "default-input-2", "r2", ["A/one"], True)
+        self.assertEqual(self.state.test(default_id)["status"], "new")
+        self.assertEqual(self.state.test(one_id)["status"], "failing")
+        self.assertEqual(self.state.test(four_id)["status"], "failing")
+
+        # Then change -N1 while -N4 and the default retain their evidence.
+        self.state.enumerated(s, "input-2", "r2", ["A/one"], True, rts_capabilities=1)
+        self.assertEqual(self.state.test(one_id)["status"], "new")
+        self.assertEqual(self.state.test(default_id)["status"], "new")
+        self.assertEqual(self.state.test(four_id)["status"], "failing")
+        self.state.set_status(one_id, "flaky", "one trial failed")
+        self.state.enumerated(s, "input-2", "r2", [], True, excluded={"A/one": 2}, rts_capabilities=1)
+        self.assertEqual(self.state.test(one_id)["status"], "flaky")
+
+        # Finally change -N4; -N1's duplicate enumeration must not rewrite it.
+        self.state.enumerated(s, "four-input-2", "r2", ["A/one"], True, rts_capabilities=4)
+        self.assertEqual(self.state.test(four_id)["status"], "new")
+        self.assertEqual(self.state.test(one_id)["status"], "flaky")
+        self.assertEqual(self.state.test(default_id)["status"], "new")
+
+    def test_test_ids_refuse_a_collision_with_a_valid_default_path(self):
+        s = suite().record()
+        setting_path = "ordinary"
+        collision_path = self.state.test_id("unit", setting_path, 1).split("::", 1)[1]
+        self.state.enumerated(s, "i1", "r1", [collision_path], True)
+        with self.assertRaisesRegex(LabError, "collides"):
+            self.state.enumerated(s, "i1", "r1", [setting_path], True, rts_capabilities=1)
+
     def test_claims_exclude_live_holders_and_take_over_stale_ones(self):
         self.assertIsNone(self.state.claim("suite:x", "a", "flake"))
         self.assertEqual(self.state.claim("suite:x", "b", "flake")["owner"], "a")
@@ -214,6 +283,12 @@ class LedgerTests(unittest.TestCase):
         self.assertIsNone(self.state.claim("suite:x", "b", "flake"))
         self.assertEqual(self.state.held("suite:x")["owner"], "b")
         self.assertEqual(self.state.events("suite:x")[0]["kind"], "claim-takeover")
+
+    def test_suite_claim_serializes_flakes_across_capability_settings(self):
+        self.assertIsNone(self.state.claim("suite:unit", "setting-1", "flake", {"rts_capabilities": 1}))
+        holder = self.state.claim("suite:unit", "setting-4", "flake", {"rts_capabilities": 4})
+        self.assertEqual(holder["owner"], "setting-1")
+        self.assertEqual(holder["document"]["rts_capabilities"], 1)
 
     def test_trials_are_immutable_once_finished(self):
         run = self.state.begin("flake", "unit", "r", "origin/master", True, {})

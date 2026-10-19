@@ -68,6 +68,7 @@ def parser() -> argparse.ArgumentParser:
     f.add_argument("--target", help="a suite or test id; default: the next suite with unmeasured tests")
     f.add_argument("--ref", help="a committed revision; anything but the upstream head is candidate evidence")
     f.add_argument("--trials", type=int)
+    f.add_argument("--rts-capabilities", type=int, help="run an explicit Hspec target with GHC -N<k>")
     f.add_argument("--owner")
 
     sd = sub.add_parser("shakedown", help="one trial of every applicable suite at the upstream head; advisory")
@@ -171,7 +172,7 @@ def run(args, lab: Lab):
     if op == "flake":
         owner = args.owner or new_owner("flake")
         try:
-            return lab.flake(owner, args.target, args.ref, args.trials)
+            return lab.flake(owner, args.target, args.ref, args.trials, args.rts_capabilities)
         finally:
             if not args.owner:
                 s.release(owner)
@@ -295,11 +296,17 @@ def deflake(args, lab: Lab):
     if args.action == "pr":
         if not args.pr:
             raise LabError("--pr is required")
+        test = s.test(args.test)
+        if not test:
+            raise LabError(f"unknown test {args.test!r}")
         s.set_status(args.test, "fixing", f"deflake PR {args.pr}", dict(pr=args.pr), pr=args.pr)
         s.release(args.owner, "test:" + args.test)
         lab.render()
+        next_step = (f"When the PR merges, run `quruntul flake --target {args.test}` to verify this "
+                     "per-setting row on the merged revision.") if test.get("rts_capabilities") is not None else (
+                     "When the PR merges, the next $flake verifies the test on the merged revision.")
         return dict(outcome="fixing", test=args.test, pr=args.pr,
-                    next_step="When the PR merges, the next $flake verifies the test on the merged revision.")
+                    next_step=next_step)
     if not args.reason:
         raise LabError("--reason is required")
     s.event("deflake-released", args.test, dict(owner=args.owner, reason=args.reason))

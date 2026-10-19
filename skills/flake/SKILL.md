@@ -57,6 +57,8 @@ meant. Do not guess.
    - With no target: `quruntul flake`.
    - With a target: `quruntul flake --target <id>`.
 
+   Pass `--rts-capabilities <k>` only when the user explicitly requested a capability count, and only with an explicit Hspec test or suite target. A suite may restrict counts in `rts_capabilities`; use a declared count when present. Without the option, run the ordinary default batch and selection. An explicit per-setting test id carries its setting, so target it without adding another count.
+
    Never add `--ref`. That is only for the user's explicit candidate-evidence
    requests, and for `$deflake`. The command fetches upstream, pins a
    detached checkout, builds through the adapter, enumerates, runs the

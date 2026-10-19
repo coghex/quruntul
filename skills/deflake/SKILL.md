@@ -6,8 +6,10 @@ description: "Fix one flaky test from the quruntul ledger: claim it, reproduce t
 # Deflake
 
 Turn one `flaky` test into a merged-ready fix. One iteration owns one test, from
-claim to PR. The ledger moves it to `fixing`; the next `$flake` after the PR
-merges verifies it on the merged revision and marks it `stable` or `flaky`.
+claim to PR. The ledger moves it to `fixing`. After the PR merges, a default test
+is verified by the next `$flake`; a per-setting test requires an explicit
+`quruntul flake --target <per-setting-id>` run on the merged revision to mark it
+`stable` or `flaky`.
 
 Run this skill in a **Class B** session (see the `model-classes` skill).
 
@@ -54,6 +56,8 @@ A `stable` or `new` test is accepted only when named explicitly; say it has no
 recorded lab failure.
 
 ### 2. Reproduce on the recorded evidence
+
+A per-setting test id already names its `-N` count. Pass that id to `quruntul flake --target` for both baseline and candidate batches; do not translate it to the default test id. A default test measured at a requested count uses `--rts-capabilities <k>` on that explicit target.
 
 Read the failing trials' logs and seeds. Then measure a **baseline** at the
 upstream head:
