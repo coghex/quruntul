@@ -19,6 +19,32 @@ three flaky tests.
 
 The name is the mountain of trials; the `q` makes it tab-complete.
 
+## Quick start
+
+Run the skills from a Codex session in a repository that has an adapter
+(`.quruntul/adapter.py`; Synarchy and Hetoimasia have one). A typical order:
+
+1. **Check the adapter.** `quruntul shakedown` runs one trial of every suite and
+   reports any that fail to build, list or finish. It changes no status, so fix
+   what it finds before measuring.
+2. **Measure flakiness.** `$flake 10` measures ten suites that still have
+   never-measured tests. `quruntul status` shows where the ledger stands.
+3. **Fix flaky tests.** `$deflake` takes the worst unclaimed flaky test and opens
+   a PR with before/after evidence. If a test the ledger calls stable fails in
+   CI, run `quruntul mark TEST --status flaky --reason "failed in CI" --evidence URL`
+   so `$deflake` picks it up.
+4. **Run the local-only probes.** `$test` runs the next due probe; `$playtest`
+   runs a naive-player session where the adapter offers one. Each run leaves a
+   report whose `OBS-nnn` observations wait for assessment.
+5. **Turn observations into issues.** `$assess-tests` checks open observations
+   against the current code and proposes an assessment with an id and sha256.
+   Read it with `quruntul assess show <id>`, then approve it with
+   `$assess-tests approve <id> <sha256>`, which files the issues it drafted.
+   Nothing is filed before that approval.
+6. **Profile.** `$profile` runs one reproducible performance experiment;
+   `$performance` assesses the reports and delivers a fix only when you
+   authorize it.
+
 ## How it fits together
 
 - **One ledger per clone** — `<git-common-dir>/quruntul/ledger.sqlite3`, shared
