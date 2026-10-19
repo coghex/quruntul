@@ -87,7 +87,9 @@ Its status is one of:
   somewhere real (CI, production, a user report).
 - `flaky` — a flake batch, or the owner, recorded a failure. `$deflake` owns it
   from here.
-- `failing` — its batch completed and it failed in every trial. A consistent
+- `failing` — its batch completed and it failed in every trial (under a trial
+  deadline, a trial that timed out or was killed counts as failed; see
+  Batches). A consistent
   failure is not flakiness: the harness or the environment is the first
   suspect, then the product. Its batch raises one `uncertain` observation for
   `$assess-tests`, as does any batch in which tests failed every trial,
@@ -130,6 +132,13 @@ target. A suite may declare `rts_capabilities=[1, 4]` to restrict the option;
 an empty declaration allows any positive integer. Declarations do not affect
 batches without the option.
 
+A batch run under a trial deadline (see Batches) measures the same row as any
+other batch of that test. The deadline is evidence on the batch and never part
+of a row's identity, so the row's counters, events and evidence accumulate
+across batches whatever deadline each ran under, and at a given setting the
+same per-setting row is measured. Nothing about a row changes for a batch run
+without the option.
+
 ## Batches
 
 A flake batch runs one suite's selected tests K times in fresh processes,
@@ -162,6 +171,60 @@ options and executable defaults. The run, result, report and observations
 record the count. `GHCRTS` remains scrubbed. A capability count requires an
 explicit target and an Hspec suite; it is refused for command/exit suites or
 when a suite's declared list excludes it. Enumeration may use its normal argv.
+
+### Trial deadline
+
+`quruntul flake --target TEST --trial-deadline SECONDS` runs a batch whose every
+trial has a hard deadline of SECONDS, a positive whole number. It is for one
+explicit test id (a per-setting id is one; a suite id is not) of an Hspec suite
+(never a `command` or `exit` suite), and SECONDS may not exceed the suite's
+`batch_seconds`. Anything else is refused before any build or trial. It works
+with `--rts-capabilities` and at the upstream head or a `--ref`. There is no
+suite- or adapter-level default: a batch without the option is exactly as before.
+
+The deadline replaces the suite's `trial_seconds` for that batch only, raising
+or lowering it. A trial still running at the deadline is stopped like any
+timed-out trial and its process outcome is `timeout`. The batch budget admits
+another trial only while the budget left is at least the deadline (not
+`trial_seconds`). The run record (`deadline_seconds`), every trial's result and
+the report's facts name the deadline.
+
+**Strict rule.** Under a deadline a trial is a *failed trial* of the targeted
+test when any of these holds:
+
+- the trial timed out;
+- a signal killed the process (`crashed`);
+- the process exited nonzero and Hspec did not report the test passed or
+  failed (for example an RTS abort or a heap overflow);
+- Hspec had reported the test passed and the process then timed out, was
+  killed by a signal, or exited nonzero.
+
+A test Hspec reported failed is an ordinary failure; a timeout or signal after
+that is counted once, as timed out or crashed, and a nonzero exit after it stays
+ordinary. A test reported only pending has no completed report, so these rules
+treat it as unreported. A trial that exits zero without reporting the test, and
+trials that are `interrupted`, `harness-error` or `setup-error`, are unchanged:
+the test is `missing` or `incomplete` as before.
+
+Each failed trial counted by the rule has exactly one cause, kept in that
+trial's result as `failure_causes`: `timed-out`, `crashed`, `exited-nonzero`,
+`passed-then-timed-out`, `passed-then-crashed` or `passed-then-exited-nonzero`.
+An ordinary failure has none. The report's facts, the observations it raises
+about the test and the reason of a status change the batch causes give the
+count of each cause and of failures under none; the counts sum to the test's
+failures in the batch. These trials count as completed for the rules above, so
+a batch at the upstream head in which every requested trial (more than one)
+failed the test, by these causes alone or mixed with ordinary failures, makes
+it `failing`, and one failed trial among passing ones makes it `flaky`.
+
+**Comparability.** A candidate batch (a `--ref` other than the upstream head)
+run under a deadline states in its report's facts the deadline of its row's
+baseline: the latest earlier flake batch at the upstream head that recorded
+results for exactly that row id (a setting's row has its own baseline), read
+from that batch's retained run record, as its `deadline_seconds` or else the
+`trial_seconds` recorded with it. Equal deadlines are reported as comparable,
+different ones as not comparable, and a row with no such batch as having
+nothing to compare with. A candidate batch changes no status either way.
 
 ## Shakedowns
 
@@ -307,7 +370,10 @@ and reads Hspec trial output against the suite's enumerated paths. 0.4.0 added
 the optional `legacy_history` hook and `quruntul import-history`; an adapter
 supplying the hook refuses an older engine. 0.5.0 added the optional
 `rts_capabilities` list for suites that restrict explicit per-setting flake
-batches; an adapter using it refuses an older engine. It defines `adapter()`
+batches; an adapter using it refuses an older engine. 0.6.0 added
+`quruntul flake --trial-deadline` and the strict rule that comes with it (see
+Batches); a consumer that requires a hard per-trial deadline refuses an older
+engine. It defines `adapter()`
 returning an object with:
 
 - `name` — the repository's name.
