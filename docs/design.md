@@ -374,8 +374,9 @@ lock. The lab never gives the "has edits" refusal for an incomplete checkout.
   only, the lab's claim: before it runs the add the lab durably records the full
   staging path, revision and repository under `.git/quruntul/staging/`, and drops
   it once the checkout is moved into place. The claim covers the moments after git
-  made the directory and before it wrote any link, including an empty `.git` or
-  `gitdir`; a claim for another path, revision or repository ties nothing. An
+  made the directory and before it wrote any link, including an empty `.git`,
+  `gitdir` or `commondir` (an empty `.git` is read through the entry that names
+  the path); a claim for another path, revision or repository ties nothing. An
   entry git made but never wrote a `gitdir` for is not a worktree, is not listed
   by git, and is left alone. A final path with no trace at all, such as one an
   earlier engine's add was killed on at that moment, is preserved and refused.
