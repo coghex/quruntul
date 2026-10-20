@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 
@@ -88,12 +89,18 @@ def _recorded(admin: Path) -> str | None:
 
 
 def _admin_recording(worktrees: str, path: Path) -> Path | None:
-    """The entry whose gitdir names path/.git, for a path git never wrote a .git file into."""
+    """The entry for a path git never wrote a .git file into.
+
+    Its gitdir names path/.git, or, when the add stopped before writing that, it has no gitdir
+    yet and bears the name git gives the path (its basename, numbered if that was taken).
+    """
     if not os.path.isdir(worktrees):
         return None
     wanted = os.path.realpath(path / ".git")
+    named = re.compile(re.escape(path.name) + r"\d*")
     for admin in sorted(Path(worktrees).iterdir()):
-        if _recorded(admin) == wanted:
+        recorded = _recorded(admin)
+        if recorded == wanted or (recorded is None and not (admin / "gitdir").exists() and named.fullmatch(admin.name)):
             return admin
     return None
 

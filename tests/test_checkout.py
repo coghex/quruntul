@@ -294,6 +294,30 @@ class IncompleteCheckoutTests(CheckoutFixture):
                 self.assertEqual(snapshot(path), before)
                 shutil.rmtree(path)
 
+    def test_an_add_killed_before_git_wrote_its_links_is_recovered(self):
+        """Git made the directory and an entry holding only its initializing lock, and nothing else."""
+        for path in (self.staging, self.target):
+            with self.subTest(path.name):
+                path.mkdir(parents=True)
+                admin = self.lab.common / "worktrees" / path.name
+                admin.mkdir(parents=True)
+                (admin / "locked").write_text("initializing\n")
+                registration = self.registration(path)
+                self.assertEqual((registration.admin, registration.complete), (admin, False))
+                self.assertEqual(self.lab.checkout(self.revision), self.target)
+                self.assertEqual(sorted(self.registered()), sorted([os.path.realpath(self.work),
+                                                                    os.path.realpath(self.target)]))
+                self.assertFalse(os.path.lexists(admin))
+                git(self.work, "worktree", "remove", "--force", str(self.target))
+
+    def test_an_entry_of_another_name_does_not_tie_a_bare_directory_to_the_repository(self):
+        self.staging.mkdir(parents=True)
+        admin = self.lab.common / "worktrees" / "unrelated"
+        admin.mkdir(parents=True)
+        (admin / "locked").write_text("initializing\n")
+        self.refused("unexpected checkout at", str(self.staging))
+        self.assertTrue(self.staging.is_dir() and admin.is_dir())
+
     def test_an_entry_whose_common_directory_is_another_repository_is_preserved(self):
         clone = Path(self.temp.name) / "clone"
         subprocess.run(["git", "clone", "-q", str(self.work), str(clone)], check=True)
