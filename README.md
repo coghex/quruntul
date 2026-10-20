@@ -79,10 +79,11 @@ python3 ~/work/quruntul/install.py            # preview
 python3 ~/work/quruntul/install.py --apply    # link skills and the command
 ```
 
-`install.py` symlinks each skill into `~/.codex/skills/` (so `git pull` updates
-them), links `bin/quruntul` into `~/.local/bin/`, and moves any skill it
-replaces — and the retired `autotest` — into a dated
-`~/.codex/skills-superseded-*/`. It never deletes anything.
+`install.py` symlinks each skill into `~/.codex/skills/` and `~/.claude/skills/`
+(so `git pull` updates them; `--no-claude` skips Claude Code), links
+`bin/quruntul` into `~/.local/bin/`, and moves any skill it replaces — and the
+retired `autotest` — into a dated `skills-superseded-*/` beside that skills
+directory. It never deletes anything.
 
 ## Using the command directly
 
