@@ -338,8 +338,54 @@ and may be taken over; the takeover is an event. Long-running work heartbeats.
 Each measured revision gets one detached worktree beside the repository in
 `../.<repo>-quruntul/<revision>`, reused by every run at that revision and never
 reset. A dirty or moved checkout blocks the run; it is never cleaned by the lab.
-`quruntul prune` lists checkouts no active run uses; `--apply` removes them with
-`git worktree remove`, never forcing.
+`quruntul checkouts --prune` lists checkouts no active run uses; `--apply`
+removes them with `git worktree remove`, never forcing. It lists only complete
+revision checkouts, never a staging or half-made path, and it does not remove
+locked or incomplete ones.
+
+**Creation never leaves a half-made checkout at the final path.** Under
+`checkouts.lock` the lab runs `git worktree add --detach` at a staging sibling,
+`../.<repo>-quruntul/.staging-<revision>`, and moves it to `<revision>` only once
+git finished, then repairs the worktree's registration to the final path. The
+lock is also held by the `git` the lab starts, so a `git` left running by a killed
+lab keeps other runs out of its staging checkout until it ends. If the lab is
+killed at any point during the add, nothing exists at `<revision>`, and the next
+call at that revision creates it normally. A finished staging checkout that was
+not yet moved (killed between the add and the move) is moved into place as it is,
+never deleted or reset; a move that stopped after the rename only needs its
+registration repaired, which the next call does.
+
+**Incomplete checkouts.** A checkout whose creation never completed (an
+interrupted `git worktree add`, including one an earlier engine left at the final
+path) is told by its registration, not by `git status`, which with no index
+reports every tracked file deleted: the worktree is locked with the reason
+`initializing`, or has no index. Completed means an index and no `initializing`
+lock. The lab never gives the "has edits" refusal for an incomplete checkout.
+
+- It first checks identity, as for any checkout: a worktree of another
+  repository, at another revision or attached to a branch is refused
+  (`unexpected checkout at …`, `lab checkout is no longer detached`) and left
+  alone.
+- It then verifies the checkout is *pristine*: every file below it (`.git`
+  aside) is a path of the revision's committed tree of the same type, with
+  content that is byte-identical to the commit's or a byte-prefix of it,
+  including an empty file; a symlink must have exactly the committed target and
+  is never followed; committed paths not yet written are fine. Contents are
+  compared byte for byte against the committed blobs. A pristine incomplete
+  checkout, and its leftover registration, are removed and the checkout is made
+  again in the same call; the run proceeds with no human step.
+- Otherwise (an edited file, a file not in the commit, a path of the wrong
+  type, a different symlink target) the call refuses with `lab checkout was never
+  completed (interrupted git worktree add): <path>`, names the offending
+  paths, and says the checkout is preserved for inspection. It is not removed,
+  reset or modified.
+
+A completed checkout is never removed, reset or cleaned by the lab, edited or
+not; one with tracked edits is still refused with `lab checkout has edits;
+preserve and inspect <path>, it is never reset`. The same rules apply to a
+leftover staging checkout: it is cleared only when pristine, and a staging
+checkout holding anything else is preserved and refused. A checkout complete under
+the earlier layout (made directly at the final path) keeps working unchanged.
 
 ## Argument grammar
 
