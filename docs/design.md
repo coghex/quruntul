@@ -352,8 +352,9 @@ lab keeps other runs out of its staging checkout until it ends. If the lab is
 killed at any point during the add, nothing exists at `<revision>`, and the next
 call at that revision creates it normally. A finished staging checkout that was
 not yet moved (killed between the add and the move) is moved into place as it is,
-never deleted or reset; a move that stopped after the rename only needs its
-registration repaired, which the next call does.
+never deleted or reset; a move that stopped after the rename, whose registration
+still records the staging path, is identity-checked and then repaired by the next
+call. A moved worktree that does not record the staging path is never repaired.
 
 **Incomplete checkouts.** A checkout whose creation never completed (an
 interrupted `git worktree add`, including one an earlier engine left at the final
@@ -362,10 +363,12 @@ reports every tracked file deleted: the worktree is locked with the reason
 `initializing`, or has no index. Completed means an index and no `initializing`
 lock. The lab never gives the "has edits" refusal for an incomplete checkout.
 
-- It first checks identity, as for any checkout: a worktree of another
-  repository, at another revision or attached to a branch is refused
-  (`unexpected checkout at …`, `lab checkout is no longer detached`) and left
-  alone.
+- It first checks identity, as for any checkout, and refuses and leaves alone
+  anything it cannot show is this lab's own interrupted add: a worktree whose
+  registration belongs to another repository (its `commondir`), one at another
+  revision or attached to a branch (`unexpected checkout at …`, `lab checkout
+  is no longer detached`), and a bare directory with no registration or `.git`
+  tying it to this repository's worktrees, however much of it looks committed.
 - It then verifies the checkout is *pristine*: every file below it (`.git`
   aside) is a path of the revision's committed tree of the same type, with
   content that is byte-identical to the commit's or a byte-prefix of it,
