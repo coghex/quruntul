@@ -182,8 +182,11 @@ Only when the user authorized PR creation and every gate above passes:
 The PR body is the standalone contract. Include the measured problem, minimal
 change, semantic invariants, exact candidate revision, focused tests and
 unchanged-baseline result, before/after profile run IDs and comparable metrics,
-limitations, and the literal statement `No linked issue — standalone
-performance change.` Do not publish local reports or raw artifacts; summarize
+limitations, the literal statement `No linked issue — standalone
+performance change.`, and, as its last line, the origin marker of the agent
+that wrote the implementation (`<!-- pr-origin:claude -->` or
+`<!-- pr-origin:codex -->`), even when a different agent opens the PR. It
+routes the review to the opposite brand. Do not publish local reports or raw artifacts; summarize
 their relevant measurements.
 
 Report the branch, worktree, commit, profile run IDs, validation assessment,
@@ -196,12 +199,13 @@ After a standalone performance PR is open and recorded, end the delivery by
 asking the user whether to run:
 
 ```text
-$kanban:pr-review --allow-no-issue <pr-number>
+$kanban:pr-review --allow-no-issue <pr-number>      # Codex
+/kanban:pr-review <pr-number> --allow-no-issue      # Claude
 ```
 
 This review is a separate external action and is not implied by delivery
 authorization. Do not invoke it unless the user explicitly agrees. When the
 user grants that permission in the same request, proceed without asking a
-second time. Follow the installed `$kanban:pr-review` skill completely; the
+second time. Follow the installed kanban `pr-review` skill completely; the
 `--allow-no-issue` exception permits this intentionally unlinked standalone
 PR, while any linked issue remains subject to the canonical approval gate.

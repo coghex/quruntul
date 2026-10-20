@@ -21,11 +21,12 @@ in the same commit as any behaviour it describes.
 - **Tracker:** GitHub `coghex/quruntul`, default branch `master`, through the
   Kanban plugin (`~/work/kanban`, never this project's tracker). The primary
   checkout is `~/work/quruntul`; it only fast-forwards to `master`. Implement
-  in an isolated worktree under `.worktrees/` on a branch, and deliver by pull
-  request.
-- **One issue, one pull request, one worktree.** Code, tests, the
-  documentation the change requires (including `docs/design.md`) and any
-  evidence go together. Use `Closes #N` when the pull request completes the
+  in an isolated worktree under `~/worktrees/coghex/quruntul/` on a branch, and
+  deliver by pull request.
+- **One issue, one pull request, one worktree.** Code, tests and any
+  evidence go together. Documentation the change requires (including
+  `docs/design.md`) lands on `master` with `docs-push` and is linked from the
+  pull request body. Use `Closes #N` when the pull request completes the
   issue.
 - **Mark every pull request's origin.** Its body must end with exactly one
   origin marker as its final line: `<!-- pr-origin:claude -->` or

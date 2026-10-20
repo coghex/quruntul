@@ -49,7 +49,7 @@ workloads and their comparison rules are in the sibling `profile` skill's
 
 When delivery mode applies, first verify the completed assessment and its
 current-code premise, then read
-[delivery.md](delivery.md) completely and follow it. Do
+[references/delivery.md](references/delivery.md) completely and follow it. Do
 not create a duplicate assessment for already-consumed source reports.
 
 ## 1. Select and claim reports
