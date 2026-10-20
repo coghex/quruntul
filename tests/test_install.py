@@ -20,6 +20,7 @@ class InstallTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.home = Path(self.temp.name) / "codex"
+        self.claude = Path(self.temp.name) / "claude"
         self.bin = Path(self.temp.name) / "bin"
         (self.home / "skills" / "flake").mkdir(parents=True)
         (self.home / "skills" / "flake" / "SKILL.md").write_text("old flake")
@@ -32,7 +33,8 @@ class InstallTests(unittest.TestCase):
     def run_install(self, *extra):
         out = io.StringIO()
         with redirect_stdout(out), redirect_stderr(io.StringIO()):
-            install.main(["--codex-home", str(self.home), "--bin-dir", str(self.bin), *extra])
+            install.main(["--codex-home", str(self.home), "--claude-home", str(self.claude),
+                          "--bin-dir", str(self.bin), *extra])
         return json.loads(out.getvalue())
 
     def test_preview_changes_nothing(self):
@@ -55,6 +57,20 @@ class InstallTests(unittest.TestCase):
         self.assertTrue((self.bin / "quruntul").is_symlink())
         again = self.run_install("--apply")
         self.assertTrue(all(a["action"] == "keep" for a in again["actions"]))
+
+    def test_apply_links_the_same_skills_for_claude(self):
+        (self.claude / "skills" / "test").mkdir(parents=True)
+        (self.claude / "skills" / "test" / "SKILL.md").write_text("old test")
+        self.run_install("--apply")
+        for name in install.SKILLS:
+            self.assertTrue((self.claude / "skills" / name).is_symlink(), name)
+        backups = list(self.claude.glob("skills-superseded-*"))
+        self.assertEqual((backups[0] / "test" / "SKILL.md").read_text(), "old test")
+
+    def test_no_claude_leaves_claude_untouched(self):
+        self.run_install("--apply", "--no-claude")
+        self.assertFalse(self.claude.exists())
+        self.assertTrue((self.home / "skills" / "flake").is_symlink())
 
     def test_refuses_to_replace_another_command(self):
         self.bin.mkdir()
