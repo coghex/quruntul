@@ -355,9 +355,10 @@ or, when that leftover cannot be proven the lab's (below), refuses and preserves
 not yet moved (killed between the add and the move) and whose registration and
 claim name it is moved into place as it is, never deleted or reset. Before
 anything else the call verifies the final path if one exists: it must be a
-worktree of this repository whose registration's `gitdir` link names that very
-path. A link that is mismatched, empty or truncated (a copy of another checkout,
-say) refuses and changes nothing: no staging cleanup, no `git status`, no repair,
+worktree of this repository that git wrote in full (its `.git` marker, `HEAD`
+at the revision, detached, and `commondir`) and whose registration's `gitdir`
+link, relative or absolute, names that very path. A link or file that is mismatched, empty, truncated or missing (a copy of another
+checkout, say) refuses and changes nothing: no staging cleanup, no `git status`, no repair,
 no publication. The one exception is the lab's own move that stopped after the
 rename: its staging path is gone, the link still names it and the lab's claim
 matches, so the next call repairs the registration to the final path.
@@ -392,7 +393,9 @@ lock. The lab never gives the "has edits" refusal for an incomplete checkout.
   `<revision>` (for example one an earlier engine's add left, which no claim can
   vouch for) is refused and preserved however pristine it looks, with a message
   that names the path and its registration and gives the command to clear it by
-  hand after inspection (`git -C <repo> worktree remove --force --force <path>`).
+  hand after inspection (`git -C <repo> worktree remove --force --force <path>`
+  for an incomplete checkout that links to itself, `rm -rf <path>` and then
+  `git worktree prune` for one git did not write in full or whose link is wrong).
   An earlier *completed* checkout stays reusable.
 - Every other partial-write state is likewise refused and preserved rather than
   recovered: a reverse link truncated mid-repair (on a finished staging checkout
