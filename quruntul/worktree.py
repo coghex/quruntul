@@ -59,25 +59,26 @@ def inspect(common: Path, path: Path) -> Registration:
         except OSError:
             return Registration(None, foreign=True)
         if not text:
-            return Registration(None)  # git created the file and stopped before writing it
-        if not text.startswith("gitdir:"):
+            admin = _admin_recording(worktrees, path)  # git created the file and stopped before writing it
+        elif not text.startswith("gitdir:"):
             return Registration(None, foreign=True)
-        named = Path(path, text[len("gitdir:"):].strip())
-        if os.path.realpath(named.parent) != worktrees:
-            return Registration(None, foreign=True)
-        admin = named if named.is_dir() else None
-        dangling = admin is None
+        else:
+            named = Path(path, text[len("gitdir:"):].strip())
+            if os.path.realpath(named.parent) != worktrees:
+                return Registration(None, foreign=True)
+            admin = named if named.is_dir() else None
+            dangling = admin is None
     else:
         admin = _admin_recording(worktrees, path)
     if admin is None:
         return Registration(None, dangling=dangling)
-    # Git names the entry's repository in commondir (absent until the add has written it); a different one is foreign.
+    # Git names the entry's repository in commondir (absent or empty until the add has written it); a different one is foreign.
     shared = _read(admin / "commondir")
-    if shared is not None and os.path.realpath(admin / shared) != os.path.realpath(common):
+    if shared and os.path.realpath(admin / shared) != os.path.realpath(common):
         return Registration(None, foreign=True)
     recorded = _recorded(admin)
     return Registration(admin, stale=recorded != os.path.realpath(marker), recorded=recorded,
-                        locked=_read(admin / "locked"), indexed=(admin / "index").exists(), head=_read(admin / "HEAD"))
+                        locked=_read(admin / "locked"), indexed=(admin / "index").exists(), head=_read(admin / "HEAD") or None)
 
 
 def _read(path: Path) -> str | None:

@@ -120,6 +120,14 @@ class CheckoutFixture(LabFixture):
                              capture_output=True, text=True, check=True).stdout
         return [os.path.realpath(line[len("worktree "):]) for line in out.splitlines() if line.startswith("worktree ")]
 
+    def finished_but_unpublished(self):
+        with patch.object(Lab, "_publish", side_effect=RuntimeError("stopped before publication")):
+            with self.assertRaises(RuntimeError):
+                self.lab.checkout(self.revision)
+        self.assertFalse(os.path.lexists(self.target))
+        self.assertTrue(self.registration(self.staging).complete)
+        (self.staging / "kept.txt").write_text("untracked work in the finished staging checkout\n")
+
     def orphan_entry(self, name) -> Path:
         """An entry git made for an add that was killed before it wrote a gitdir: only its lock."""
         entry = self.lab.common / "worktrees" / name
@@ -329,6 +337,56 @@ class IncompleteCheckoutTests(CheckoutFixture):
         self.lab._claim(self.staging, self.revision)
         self.assertEqual(self.lab.checkout(self.revision), self.target)
 
+    def test_an_empty_git_marker_does_not_hide_the_registration_that_names_the_path(self):
+        clone = Path(self.temp.name) / "clone"
+        subprocess.run(["git", "clone", "-q", str(self.work), str(clone)], check=True)
+        other = git_output(self.work, "rev-parse", "HEAD~1")
+
+        def at_another_revision(admin):
+            (admin / "HEAD").write_text(other + "\n")
+
+        def of_another_repository(admin):
+            (admin / "commondir").write_text(str(clone / ".git") + "\n")
+
+        for name, damage, message in (("another revision", at_another_revision, "unexpected checkout at"),
+                                      ("another repository", of_another_repository, "unexpected checkout at")):
+            with self.subTest(name):
+                self.kill_add(self.staging)
+                self.lab._claim(self.staging, self.revision)
+                admin = self.registration(self.staging).admin
+                damage(admin)
+                (self.staging / ".git").write_text("")
+                before, before_admin = snapshot(self.staging), snapshot(admin)
+                self.refused(message, str(self.staging))
+                self.assertEqual((snapshot(self.staging), snapshot(admin)), (before, before_admin))
+                shutil.rmtree(self.staging)
+                shutil.rmtree(admin)
+
+        with self.subTest("incomplete"):
+            self.kill_add(self.staging)
+            self.lab._claim(self.staging, self.revision)
+            (self.staging / ".git").write_text("")
+            self.assertEqual(self.lab.checkout(self.revision), self.target)
+            self.assertEqual(sorted(self.registered()), sorted([os.path.realpath(self.work),
+                                                                os.path.realpath(self.target)]))
+            git(self.work, "worktree", "remove", "--force", str(self.target))
+
+        with self.subTest("completed"):
+            self.finished_but_unpublished()
+            (self.staging / ".git").write_text("")
+            self.assertTrue(self.registration(self.staging).complete)
+            self.assertEqual(self.lab.checkout(self.revision), self.target)
+            self.assertEqual((self.target / "kept.txt").read_text(), "untracked work in the finished staging checkout\n")
+
+    def test_an_add_killed_while_writing_commondir_is_recovered_but_a_foreign_one_is_not(self):
+        self.kill_add(self.staging)
+        self.lab._claim(self.staging, self.revision)
+        admin = self.registration(self.staging).admin
+        (admin / "commondir").write_text("")
+        self.assertFalse(self.registration(self.staging).foreign)
+        self.assertEqual(self.lab.checkout(self.revision), self.target)
+        self.assertEqual(sorted(self.registered()), sorted([os.path.realpath(self.work), os.path.realpath(self.target)]))
+
     def test_a_claim_of_another_path_revision_or_repository_does_not_make_a_directory_ours(self):
         self.staging.mkdir(parents=True)
         (self.staging / "probe.py").write_bytes((self.work / "probe.py").read_bytes()[:20])
@@ -412,14 +470,6 @@ class CompleteCheckoutTests(CheckoutFixture):
 
 
 class PublishBoundaryTests(CheckoutFixture):
-    def finished_but_unpublished(self):
-        with patch.object(Lab, "_publish", side_effect=RuntimeError("stopped before publication")):
-            with self.assertRaises(RuntimeError):
-                self.lab.checkout(self.revision)
-        self.assertFalse(os.path.lexists(self.target))
-        self.assertTrue(self.registration(self.staging).complete)
-        (self.staging / "kept.txt").write_text("untracked work in the finished staging checkout\n")
-
     def test_a_finished_staging_checkout_is_resumed_not_deleted_or_reset(self):
         self.finished_but_unpublished()
         self.assertEqual(self.lab.checkout(self.revision), self.target)

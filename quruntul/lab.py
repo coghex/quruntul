@@ -114,6 +114,9 @@ class Lab:
                 raise LabError(f"lab staging checkout exists beside {target}; preserve and inspect {staging}")
             if leftover.complete:
                 self._identity(staging, leftover, revision, claimed)
+                marker = staging / ".git"
+                if marker.is_file() and not marker.read_text(errors="replace").strip():
+                    marker.write_text(f"gitdir: {leftover.admin}\n")  # the write git was stopped in; the entry has it
                 self._publish(staging, target, revision)
             else:
                 self._recover(staging, leftover, revision, claimed)
