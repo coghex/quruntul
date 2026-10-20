@@ -357,7 +357,9 @@ claim name it is moved into place as it is, never deleted or reset. Before
 anything else the call verifies the final path if one exists: it must be a
 worktree of this repository that git wrote in full (its `.git` marker, `HEAD`
 at the revision, detached, and `commondir`) and whose registration's `gitdir`
-link, relative or absolute, names that very path. A link or file that is mismatched, empty, truncated or missing (a copy of another
+link, relative or absolute, names that very path. A final path that is registered but whose directory is missing (the checkout was
+moved away) is refused too, and nothing is created beside it. A link or file that
+is mismatched, empty, truncated or missing (a copy of another
 checkout, say) refuses and changes nothing: no staging cleanup, no `git status`, no repair,
 no publication. The one exception is the lab's own move that stopped after the
 rename: its staging path is gone, the link still names it and the lab's claim
@@ -395,7 +397,8 @@ lock. The lab never gives the "has edits" refusal for an incomplete checkout.
   that names the path and its registration and gives the command to clear it by
   hand after inspection (`git -C <repo> worktree remove --force --force <path>`
   for an incomplete checkout that links to itself, `rm -rf <path>` and then
-  `git worktree prune` for one git did not write in full or whose link is wrong).
+  `git worktree prune` for one git did not write in full, whose link is wrong or
+  whose `.git` marker is malformed).
   An earlier *completed* checkout stays reusable.
 - Every other partial-write state is likewise refused and preserved rather than
   recovered: a reverse link truncated mid-repair (on a finished staging checkout
