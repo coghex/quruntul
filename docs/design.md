@@ -395,10 +395,14 @@ lock. The lab never gives the "has edits" refusal for an incomplete checkout.
   `<revision>` (for example one an earlier engine's add left, which no claim can
   vouch for) is refused and preserved however pristine it looks, with a message
   that names the path and its registration and gives the command to clear it by
-  hand after inspection (`git -C <repo> worktree remove --force --force <path>`
-  for an incomplete checkout that links to itself, `rm -rf <path>` and then
-  `git worktree prune` for one git did not write in full, whose link is wrong or
-  whose `.git` marker is malformed).
+  hand after inspection: `rm -rf <path> && git -C <repo> worktree remove --force
+  --force <path>` when the registration's own link names the path (git clears its
+  `initializing` lock, and cannot remove a directory whose files it cannot read,
+  so the directory goes first), or `rm -rf <path>` alone for a copy, whose
+  registration belongs to the original and is not the lab's to remove. A final
+  path whose directory is gone but whose registration remains is refused with the
+  `worktree remove --force --force` command, since `git worktree prune` leaves a
+  locked registration in place.
   An earlier *completed* checkout stays reusable.
 - Every other partial-write state is likewise refused and preserved rather than
   recovered: a reverse link truncated mid-repair (on a finished staging checkout
