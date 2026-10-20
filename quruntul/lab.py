@@ -111,9 +111,16 @@ class Lab:
         """
         claimed = self._claimed(staging, revision)
         registration = None
+        if not os.path.lexists(target):
+            missing = worktree.inspect(self.common, target)
+            if missing.admin is not None:  # registered at this path with no directory: moved away, or removed by hand
+                raise LabError(f"lab checkout is registered at {target} but missing; its registration "
+                               f"{missing.admin} is preserved and nothing was created. If it was moved, move it back "
+                               f"or run git -C {shlex.quote(str(self.root))} worktree repair <new path>; if it is gone "
+                               f"for good, run git -C {shlex.quote(str(self.root))} worktree prune")
         if os.path.lexists(target):
             registration = worktree.inspect(self.common, target)
-            self._identity(target, registration, revision)
+            self._identity(target, registration, revision, cleanup=True)
             if not (registration.marked and registration.common_ok and registration.head == revision):
                 raise self._unproven(target, registration, "has a .git marker, HEAD or common directory that git "
                                      "did not write in full", "registration", cleanup=target)
@@ -177,32 +184,38 @@ class Lab:
     def _release(self, revision: str) -> None:
         self._claim_file(revision).unlink(missing_ok=True)
 
-    def _identity(self, path: Path, registration: worktree.Registration, revision: str) -> None:
+    def _by_hand(self, path: Path) -> str:
+        return (f" After inspecting it, if nothing in it is wanted, clear it by hand with: rm -rf "
+                f"{shlex.quote(str(path))} (then, if git still lists a registration for a path that no "
+                f"longer exists, git -C {shlex.quote(str(self.root))} worktree prune)")
+
+    def _identity(self, path: Path, registration: worktree.Registration, revision: str, cleanup: bool = False) -> None:
         """Refuse a path that is not a worktree this repository made, or is at another revision or attached.
 
-        Called before anything is done to it, so what is refused is never removed or modified.
+        Called before anything is done to it, so what is refused is never removed or modified. For a final path
+        the refusal also says how to clear it by hand.
         """
+        by_hand = self._by_hand(path) if cleanup else ""
         if registration.foreign:
-            raise LabError(f"unexpected checkout at {path}")
+            raise LabError(f"unexpected checkout at {path}; it is preserved for inspection and never modified."
+                           + by_hand)
         if registration.admin is None:
             raise LabError(f"unexpected checkout at {path}: nothing ties it to this repository's worktrees, "
-                           "so it is preserved for inspection")
+                           "so it is preserved for inspection." + by_hand)
         head = registration.head
         if head is not None and head.startswith("ref:"):
-            raise LabError(f"lab checkout is no longer detached: {path}")
+            raise LabError(f"lab checkout is no longer detached: {path}; it is preserved for inspection."
+                           + by_hand)
         if head is not None and head != revision:
-            raise LabError(f"unexpected checkout at {path}")
+            raise LabError(f"unexpected checkout at {path}; it is at another revision and preserved for "
+                           "inspection." + by_hand)
 
     def _unproven(self, path: Path, registration: worktree.Registration, why: str, what: str,
                   cleanup: Path | None = None) -> LabError:
         """The refusal for a path and a registration that cannot be shown to belong together: both are kept."""
         lead = ("lab checkout was never completed (interrupted git worktree add)" if not registration.complete
                 else f"lab checkout {what} is not provably this path's")
-        by_hand = ""
-        if cleanup is not None:
-            by_hand = (f" After inspecting it, if nothing in it is wanted, clear it by hand with: rm -rf "
-                       f"{shlex.quote(str(cleanup))} (then, if git still lists a registration for a path that no "
-                       f"longer exists, git -C {shlex.quote(str(self.root))} worktree prune)")
+        by_hand = self._by_hand(cleanup) if cleanup is not None else ""
         return LabError(f"{lead}: {path}; its registration {registration.admin} {why}, so the directory and the "
                         f"registration are preserved for inspection and never modified.{by_hand}")
 

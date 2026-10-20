@@ -711,6 +711,34 @@ class PublishBoundaryTests(CheckoutFixture):
                 shutil.rmtree(admin)
                 self.lab._release(self.revision)
 
+    def test_a_registered_checkout_moved_away_from_the_final_path_is_not_registered_twice(self):
+        checkout = self.lab.checkout(self.revision)
+        admin = self.registration(checkout).admin
+        moved = Path(self.temp.name) / "moved"
+        os.rename(checkout, moved)  # its registration still records the final path
+        before_admin, before_moved, before_registered = snapshot(admin), snapshot(moved), self.registered()
+        with self.watching() as calls:
+            self.refused("registered at", str(self.target), "missing", str(admin), "worktree repair", "worktree prune")
+        self.assertEqual(calls, [])
+        self.assertFalse(os.path.lexists(self.target) or os.path.lexists(self.staging))
+        self.assertEqual((snapshot(admin), snapshot(moved), self.registered()),
+                         (before_admin, before_moved, before_registered))
+        self.assertEqual(len(list((self.lab.common / "worktrees").iterdir())), 1)
+
+    def test_malformed_forward_markers_at_the_final_path_are_refused_with_cleanup_guidance(self):
+        checkout = self.lab.checkout(self.revision)
+        admin = self.registration(checkout).admin
+        for name, text in (("a truncated gitdir line", "gitdir: "), ("a missing entry", "gitdir: /nonexistent/entry"),
+                           ("not a gitdir line", "garbage\n")):
+            with self.subTest(name):
+                (checkout / ".git").write_text(text)
+                before, before_admin = snapshot(checkout), snapshot(admin)
+                with self.watching() as calls:
+                    self.refused("unexpected checkout at", str(self.target), "preserved for inspection", "rm -rf",
+                                 "worktree prune")
+                self.assertEqual(calls, [])
+                self.assertEqual((snapshot(checkout), snapshot(admin)), (before, before_admin))
+
     def test_every_refusal_at_a_final_path_names_the_manual_cleanup(self):
         checkout = self.lab.checkout(self.revision)
         admin = self.registration(checkout).admin
