@@ -368,7 +368,9 @@ lock. The lab never gives the "has edits" refusal for an incomplete checkout.
   registration belongs to another repository (its `commondir`), one at another
   revision or attached to a branch (`unexpected checkout at …`, `lab checkout
   is no longer detached`), and a bare directory with no registration or `.git`
-  tying it to this repository's worktrees, however much of it looks committed.
+  tying it to this repository's worktrees, however much of it looks committed. The
+  entry git makes before it writes its links (named for the path, holding only the
+  `initializing` lock) is that tie, so an add killed that early is recovered too.
 - It then verifies the checkout is *pristine*: every file below it (`.git`
   aside) is a path of the revision's committed tree of the same type, with
   content that is byte-identical to the commit's or a byte-prefix of it,
