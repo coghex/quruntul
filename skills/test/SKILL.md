@@ -106,8 +106,10 @@ or ask.
 ## Repeating: `$test N`
 
 Run N iterations **serially**; don't run two probes at once. Give each
-iteration to a fresh subagent when you can delegate, so a long probe's evidence
-doesn't fill this conversation. Each worker gets:
+iteration to a fresh subagent only when one was explicitly requested (the
+owner's global rule; Sonnet only), which keeps a long probe's evidence out of
+this conversation; otherwise run them yourself one after another. Each worker
+gets:
 
 > In `<repo>`, complete exactly one `$test` iteration (`<target/hint args>`) as
 > the installed skill describes, including the attached report. Return the

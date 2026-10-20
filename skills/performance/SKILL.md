@@ -1,6 +1,6 @@
 ---
 name: performance
-description: Assess, correlate, and verify completed local `$profile` reports and decide whether to act, measure, or stop. When the user explicitly authorizes delivery of an accepted recommendation, implement that one finding in an isolated worktree, validate its immutable commit through sequential `$profile` subagents, and open an unlinked standalone PR if every gate passes. Use when the user invokes `$performance`, asks to analyze local profiling evidence, or asks to carry an accepted performance fix through validation and PR creation. Never create an issue, publish lab documents, or merge.
+description: Assess, correlate, and verify completed local `$profile` reports and decide whether to act, measure, or stop. When the user explicitly authorizes delivery of an accepted recommendation, implement that one finding in an isolated worktree, validate its immutable commit through sequential `$profile` runs, and open an unlinked standalone PR if every gate passes. Use when the user invokes `$performance`, asks to analyze local profiling evidence, or asks to carry an accepted performance fix through validation and PR creation. Never create an issue, publish lab documents, or merge.
 ---
 
 # Performance
@@ -43,7 +43,7 @@ workloads and their comparison rules are in the sibling `profile` skill's
   assessment document alone is not delivery authorization.
 - Delivery authorization covers only the accepted finding's minimal
   implementation, relevant semantic gates, a local candidate commit, the
-  assessment's validation profiles through fresh subagents, branch push, and
+  assessment's validation profiles as fresh `$profile` runs, branch push, and
   one standalone PR when all gates pass. It never authorizes an issue, merge,
   unrelated optimization, published lab artifact, or broad full-CI run.
 

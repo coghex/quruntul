@@ -26,7 +26,7 @@ and restoration transition. Never hand-edit `registry.json` or
 
 Every quruntul skill parses its argument the same way. A leading positive integer
 `N` means N experiments run **serially**, each a fresh `$profile` invocation
-(and a fresh subagent when you can delegate) with its own refresh, claim,
+(in a fresh Sonnet subagent only when one was explicitly requested) with its own refresh, claim,
 report and restore. Anything after it is the hint below. Stop a sequence early
 when an experiment ends `blocked` for a reason that is not specific to it, when
 no unanswered question remains, or when the user says stop. The persistent lab
@@ -51,7 +51,7 @@ backlog. Read recent assessments with outcome `follow-up-measurement` before
 selecting a question. Their `Follow-up profiling` sections define experiments
 for later invocations. Ordinary `$performance` assessment mode does not run
 those experiments; an explicitly authorized `$performance` delivery workflow
-may delegate each one to a fresh `$profile` subagent at an immutable candidate
+runs each one as a fresh `$profile` invocation at an immutable candidate
 commit.
 
 When the user supplies an assessment ID, `PFN-nnn`, proposed `profile_id`, or

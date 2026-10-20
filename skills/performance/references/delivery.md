@@ -14,8 +14,8 @@ validation profiles, comparison keys, controls, and decision rules.
 For every validation experiment, identify a compatible before report on the
 current base. It must preserve the same logical comparison key, build method,
 workload, instrument semantics, and relevant code. If no such retained report
-exists—or relevant code/build/workload inputs changed—delegate a base-revision
-`$profile` subagent first. A diagnostic hotspot alone is not before/after
+exists—or relevant code/build/workload inputs changed—run a base-revision
+`$profile` first. A diagnostic hotspot alone is not before/after
 evidence.
 
 Verify the premise against the current upstream base and current code before
@@ -90,21 +90,22 @@ performance validation.
 Record the clean commit with `delivery-update --status candidate-ready
 --candidate-revision <commit>`.
 
-## 4. Delegate the validation profiles
+## 4. Run the validation profiles
 
-Every validation experiment must run in a fresh subagent that explicitly
-invokes the sibling `$profile` skill. Run subagents sequentially because the
-profiling lab has one serialized persistent worktree; never start two profile
-runs in parallel.
+Every validation experiment runs as a fresh invocation of the sibling
+`$profile` skill. Hand one to a subagent only when one was explicitly requested
+(the owner's global rule; Sonnet only);
+otherwise run it yourself. Run them sequentially because the profiling lab has
+one serialized persistent worktree; never start two profile runs in parallel.
 
-Advance the delivery to validation before spawning the first candidate run:
+Advance the delivery to validation before starting the first candidate run:
 
 ```bash
 python3 <profile-skill-dir>/scripts/profile_coordinator.py delivery-update \
   --repo <repo> --delivery-id <delivery-id> --status validating
 ```
 
-Give each subagent only the concrete experiment contract:
+Give each run (or its subagent) only the concrete experiment contract:
 
 - repository and exact candidate commit or local branch ref;
 - originating assessment ID and `PFN-nnn`;
@@ -113,9 +114,9 @@ Give each subagent only the concrete experiment contract:
 - required build/runtime controls and completion boundary; and
 - the finding's acceptance or rejection rule.
 
-Require the subagent to use `$profile --target-ref <candidate-commit>` through
-the coordinator, retain a validated report and raw artifacts, restore the lab,
-and return the run ID and report path. The subagent must not edit code, create
+Each run uses `$profile --target-ref <candidate-commit>` through
+the coordinator, retains a validated report and raw artifacts, restores the lab,
+and returns the run ID and report path. A subagent must not edit code, create
 an issue, push the implementation branch, or open a PR.
 
 Record each completed candidate run before evaluating or starting the next:
@@ -126,7 +127,7 @@ python3 <profile-skill-dir>/scripts/profile_coordinator.py delivery-update \
   --validation-run <run-id>
 ```
 
-After each subagent completes, inspect its report and coordinator state. Check
+After each run completes, inspect its report and coordinator state. Check
 normal workload completion, report completeness, matching comparison key,
 machine/toolchain/build-method/workload fingerprints, measurement semantics,
 and the finding's decision rule. Revision and executable digest identify the
