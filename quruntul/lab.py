@@ -103,8 +103,10 @@ class Lab:
     def _settle(self, target: Path, staging: Path, revision: str, lock) -> None:
         """Leave a complete checkout at target, or refuse without touching what is there."""
         registration = worktree.inspect(self.common, target) if os.path.lexists(target) else None
-        if registration and registration.complete and registration.stale:
-            command(["git", "worktree", "repair", str(target)], self.root)  # a publish that stopped after the move
+        if registration and registration.complete and registration.recorded == os.path.realpath(staging / ".git"):
+            # A publish that stopped after the move: the entry still records our staging path.
+            self._identity(target, registration, revision)
+            command(["git", "worktree", "repair", str(target)], self.root)
         leftover = worktree.inspect(self.common, staging)
         if os.path.lexists(staging) or leftover.admin is not None:
             if leftover.complete and registration:
@@ -127,7 +129,13 @@ class Lab:
         command(["git", "worktree", "repair", str(target)], self.root)
 
     def _identity(self, path: Path, registration: worktree.Registration, revision: str) -> None:
-        """Refuse a worktree that is foreign, at another revision or attached, before anything is done to it."""
+        """Refuse a path that is not a worktree this repository made, or is at another revision or attached.
+
+        Called before anything is done to it, so what is refused is never removed or modified.
+        """
+        if not registration.foreign and not registration.owned:
+            raise LabError(f"unexpected checkout at {path}: nothing ties it to this repository's worktrees, "
+                           "so it is preserved for inspection")
         head = registration.head
         if head is not None and head.startswith("ref:"):
             raise LabError(f"lab checkout is no longer detached: {path}")

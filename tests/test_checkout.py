@@ -283,6 +283,33 @@ class IncompleteCheckoutTests(CheckoutFixture):
         self.refused("unexpected checkout at", str(self.target))
         self.assertEqual(snapshot(self.target), before)
 
+    def test_a_bare_directory_with_no_trace_of_a_worktree_add_is_preserved(self):
+        """Committed-looking contents do not show a directory is abandoned lab state; git's own record does."""
+        for path in (self.staging, self.target):
+            with self.subTest(path.name):
+                path.mkdir(parents=True)
+                (path / "probe.py").write_bytes((self.work / "probe.py").read_bytes()[:20])
+                before = snapshot(path)
+                self.refused("unexpected checkout at", str(path), "preserved for inspection")
+                self.assertEqual(snapshot(path), before)
+                shutil.rmtree(path)
+
+    def test_an_entry_whose_common_directory_is_another_repository_is_preserved(self):
+        clone = Path(self.temp.name) / "clone"
+        subprocess.run(["git", "clone", "-q", str(self.work), str(clone)], check=True)
+        for path in (self.staging, self.target):
+            with self.subTest(path.name):
+                self.kill_add(path)
+                admin = self.registration(path).admin
+                (admin / "commondir").write_text(str(clone / ".git") + "\n")
+                self.assertTrue(self.registration(path).foreign)
+                before, before_admin, before_clone = snapshot(path), snapshot(admin), snapshot(clone / ".git")
+                self.refused("unexpected checkout at", str(path))
+                self.assertEqual((snapshot(path), snapshot(admin), snapshot(clone / ".git")),
+                                 (before, before_admin, before_clone))
+                shutil.rmtree(path)
+                shutil.rmtree(admin)
+
     def test_a_lock_still_reading_initializing_or_a_missing_index_marks_a_complete_looking_checkout_incomplete(self):
         for name, damage in (("lock only", lambda admin: (admin / "locked").write_text("initializing\n")),
                              ("index only", lambda admin: (admin / "index").unlink())):
@@ -347,6 +374,32 @@ class PublishBoundaryTests(CheckoutFixture):
         self.assertFalse(self.registration(self.target).stale)
         self.assertEqual(sorted(self.registered()), sorted([os.path.realpath(self.work), os.path.realpath(self.target)]))
         self.assertEqual((self.target / "kept.txt").read_text(), "untracked work in the finished staging checkout\n")
+
+    def test_a_moved_worktree_that_is_not_our_publication_is_never_repaired(self):
+        other = git_output(self.work, "rev-parse", "HEAD~1")
+        for name, add, message in (("another revision", ["--detach", "{place}", other], "unexpected checkout at"),
+                                   ("an attached head", ["-b", "attached", "{place}", self.revision],
+                                    "no longer detached")):
+            with self.subTest(name):
+                place = self.base / "elsewhere"
+                git(self.work, "worktree", "add", *[a.format(place=place) for a in add])
+                admin = self.registration(place).admin
+                os.rename(place, self.target)
+                self.assertTrue(self.registration(self.target).stale)
+                before, before_admin = snapshot(self.target), snapshot(admin)
+                self.refused(message)
+                self.assertEqual((snapshot(self.target), snapshot(admin)), (before, before_admin))
+                shutil.rmtree(self.target)
+                shutil.rmtree(admin)
+
+    def test_a_publication_of_the_wrong_revision_is_refused_before_it_is_repaired(self):
+        self.finished_but_unpublished()
+        admin = self.registration(self.staging).admin
+        (admin / "HEAD").write_text(git_output(self.work, "rev-parse", "HEAD~1") + "\n")
+        os.rename(self.staging, self.target)
+        before_admin = snapshot(admin)
+        self.refused("unexpected checkout at", str(self.target))
+        self.assertEqual(snapshot(admin), before_admin)
 
     def test_a_finished_staging_checkout_beside_a_final_one_is_refused_untouched(self):
         self.finished_but_unpublished()
