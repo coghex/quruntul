@@ -122,8 +122,7 @@ disposition and every issue URL. Recommend `$deflake` for flaky tests and
 
 `quruntul proposals --status accepted` lists approved missing-test proposals.
 For each selected one, write one design document in the repository's
-standalone-docs location (for Hetoimasia, the `docs-wip` worktree resolved by
-branch, `docs/test_designs/<id>.md`). Verify the gap, apparatus and oracle
+standalone-docs location (for Hetoimasia, `docs/test_designs/<id>.md`). Verify the gap, apparatus and oracle
 against the current code; preserve the proposal's fields and decision note
 verbatim; state the tier and why it stays out of CI; mark it
 `Implementation authorization: not granted`. Then:
@@ -132,6 +131,6 @@ verbatim; state the tier and why it stays out of CI; mark it
 quruntul proposal-close <proposal-id> --status designed --note "<design path>"
 ```
 
-A proposal current code already satisfies is closed `implemented` or
-`superseded` with the evidence, and gets no design. Never land the document,
-implement the test, or promote it to CI here.
+Land each design with `docs-push` once it is written. A proposal current code
+already satisfies is closed `implemented` or `superseded` with the evidence,
+and gets no design. Never implement the test or promote it to CI here.
