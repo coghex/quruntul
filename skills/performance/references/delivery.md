@@ -184,7 +184,8 @@ change, semantic invariants, exact candidate revision, focused tests and
 unchanged-baseline result, before/after profile run IDs and comparable metrics,
 limitations, the literal statement `No linked issue — standalone
 performance change.`, and, as its last line, the origin marker of the agent
-that opens it (`<!-- pr-origin:claude -->` or `<!-- pr-origin:codex -->`), which
+that wrote the implementation (`<!-- pr-origin:claude -->` or
+`<!-- pr-origin:codex -->`), even when a different agent opens the PR. It
 routes the review to the opposite brand. Do not publish local reports or raw artifacts; summarize
 their relevant measurements.
 
