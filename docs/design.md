@@ -363,23 +363,26 @@ reports every tracked file deleted: the worktree is locked with the reason
 `initializing`, or has no index. Completed means an index and no `initializing`
 lock. The lab never gives the "has edits" refusal for an incomplete checkout.
 
-- It first checks identity, as for any checkout, and refuses and leaves alone
-  anything it cannot show is this lab's own interrupted add: a worktree whose
-  registration belongs to another repository (its `commondir`), one at another
-  revision or attached to a branch (`unexpected checkout at …`, `lab checkout
-  is no longer detached`), and a bare directory with no registration or `.git`
-  tying it to this repository's worktrees, however much of it looks committed.
-  That tie is git's own record of the add (the entry whose `gitdir` names the
-  path, or a `.git` naming an entry of this repository) or, for a staging path
-  only, the lab's claim: before it runs the add the lab durably records the full
-  staging path, revision and repository under `.git/quruntul/staging/`, and drops
-  it once the checkout is moved into place. The claim covers the moments after git
-  made the directory and before it wrote any link, including an empty `.git`,
-  `gitdir` or `commondir` (an empty `.git` is read through the entry that names
-  the path); a claim for another path, revision or repository ties nothing. An
-  entry git made but never wrote a `gitdir` for is not a worktree, is not listed
-  by git, and is left alone. A final path with no trace at all, such as one an
-  earlier engine's add was killed on at that moment, is preserved and refused.
+- Only the observed failure is recovered automatically: the lab's own interrupted
+  `git worktree add`, whose registration is locked `initializing` or has no index,
+  that is provably the candidate's. Identity is checked first, as for any
+  checkout: a registration belonging to another repository (its `commondir`), a
+  worktree at another revision or attached to a branch (`unexpected checkout at …`,
+  `lab checkout is no longer detached`), and a bare directory nothing ties to this
+  repository's worktrees are refused and left alone. Provable then means the
+  registration's `gitdir` link names exactly the candidate path and, for a staging
+  path, the lab's claim names the same path and revision (before the add the lab
+  durably records the full staging path, revision and repository under
+  `.git/quruntul/staging/`, and drops it once the checkout is moved into place).
+  If the link names another path, is empty or is missing, or no claim names the
+  staging path, the directory and the registration are both preserved and the
+  call refuses, naming both paths.
+- Every other partial-write state is likewise refused and preserved rather than
+  recovered: a reverse link truncated mid-repair (on a finished staging checkout
+  or on a final path), a staging directory git made before it wrote any link, an
+  empty or dangling `.git`, and an entry git made but never wrote a `gitdir` for
+  (not a worktree; git does not list it). Such an entry may stay in place. These
+  need a person to look.
 - It then verifies the checkout is *pristine*: every file below it (`.git`
   aside) is a path of the revision's committed tree of the same type, with
   content that is byte-identical to the commit's or a byte-prefix of it,
