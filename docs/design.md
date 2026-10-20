@@ -353,12 +353,14 @@ killed at any point during the add, nothing exists at `<revision>`; the next
 call at that revision creates it normally once the staging leftover is recovered
 or, when that leftover cannot be proven the lab's (below), refuses and preserves it. A finished staging checkout that was
 not yet moved (killed between the add and the move) and whose registration and
-claim name it is moved into place as it is, never deleted or reset. A move that
-stopped after the rename, whose registration still records the staging path and
-which the lab's claim names, is identity-checked and then repaired by the next
-call; a registration that records no location, another path, or has no claim is
-never repaired: the directory and the registration are preserved and the call
-refuses.
+claim name it is moved into place as it is, never deleted or reset. Before
+anything else the call verifies the final path if one exists: it must be a
+worktree of this repository whose registration's `gitdir` link names that very
+path. A link that is mismatched, empty or truncated (a copy of another checkout,
+say) refuses and changes nothing: no staging cleanup, no `git status`, no repair,
+no publication. The one exception is the lab's own move that stopped after the
+rename: its staging path is gone, the link still names it and the lab's claim
+matches, so the next call repairs the registration to the final path.
 
 **Incomplete checkouts.** A checkout whose creation never completed (an
 interrupted `git worktree add`, including one an earlier engine left at the final
@@ -368,37 +370,41 @@ reports every tracked file deleted: the worktree is locked with the reason
 lock. The lab never gives the "has edits" refusal for an incomplete checkout.
 
 - Detection is either marker: the `initializing` lock or a missing index marks a
-  checkout incomplete. Automatic removal and recreation needs more: **both**
-  markers, pristine contents (below) and proven ownership, so only the observed
-  failure, the lab's own interrupted `git worktree add`, is recovered. Identity is
-  checked first, as for any checkout: a registration belonging to another
-  repository (its `commondir`), a worktree at another revision or attached to a
-  branch (`unexpected checkout at …`, `lab checkout is no longer detached`), and a
-  bare directory nothing ties to this repository's worktrees are refused and left
-  alone. Ownership of every recovery candidate, a final path included, means two
-  things: the registration's `gitdir` link names exactly that path, and a durable
-  claim, made by the lab *before* it ran its add, names the same path and
-  revision. The lab records that claim (full staging path, revision and
-  repository) under `.git/quruntul/staging/` and drops it once the checkout is
-  moved into place; it never makes one for a directory that already exists. So a
-  half-made checkout an earlier engine left at the final path, which no claim can
-  vouch for, is preserved and refused however pristine it looks; an earlier
-  *completed* checkout stays reusable. If the link names another path, is empty
-  or missing, no claim matches, or only one marker is present, the directory and
-  the registration are both preserved and the call refuses, naming both paths.
+  checkout incomplete. **Only the staging path is ever recovered**, because with
+  staging and a move a new checkout can be half-made nowhere else. It is removed
+  and made again, in the same call with no human step, only when all of these
+  hold: both markers are present (the lock and no index); every file is pristine
+  (below); a durable claim the lab made *before* its add names that staging path
+  and revision; and the registration's `gitdir` link names that staging path.
+  Identity is checked first, as for any checkout: a registration belonging to
+  another repository (its `commondir`), a worktree at another revision or attached
+  to a branch (`unexpected checkout at …`, `lab checkout is no longer detached`),
+  and a bare directory nothing ties to this repository's worktrees are refused
+  and left alone. The lab records the claim (full staging path, revision and
+  repository) under `.git/quruntul/staging/` and drops it only after the staging
+  checkout was recovered or published, so a refusal keeps it. If the link names
+  another path, is empty or missing, no claim matches, or only one marker is
+  present, the directory and the registration are both preserved and the call
+  refuses, naming both paths.
+- **A final path is never recovered.** An incomplete or unverifiable checkout at
+  `<revision>` (for example one an earlier engine's add left, which no claim can
+  vouch for) is refused and preserved however pristine it looks, with a message
+  that names the path and its registration and gives the command to clear it by
+  hand after inspection (`git -C <repo> worktree remove --force --force <path>`).
+  An earlier *completed* checkout stays reusable.
 - Every other partial-write state is likewise refused and preserved rather than
   recovered: a reverse link truncated mid-repair (on a finished staging checkout
   or on a final path), a staging directory git made before it wrote any link, an
   empty or dangling `.git`, and an entry git made but never wrote a `gitdir` for
   (not a worktree; git does not list it). Such an entry may stay in place. These
   need a person to look.
-- It then verifies the checkout is *pristine*: every file below it (`.git`
+- A staging checkout meeting the conditions above is then verified *pristine*: every file below it (`.git`
   aside) is a path of the revision's committed tree of the same type, with
   content that is byte-identical to the commit's or a byte-prefix of it,
   including an empty file; a symlink must have exactly the committed target and
   is never followed; committed paths not yet written are fine. Contents are
-  compared byte for byte against the committed blobs. A pristine incomplete
-  checkout, and its leftover registration, are removed and the checkout is made
+  compared byte for byte against the committed blobs. A pristine one, and its
+  leftover registration, are removed and the checkout is made
   again in the same call; the run proceeds with no human step.
 - Otherwise (an edited file, a file not in the commit, a path of the wrong
   type, a different symlink target) the call refuses with `lab checkout was never
