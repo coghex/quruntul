@@ -750,6 +750,24 @@ class PublishBoundaryTests(CheckoutFixture):
         self.refused("not provably this path's", str(self.target), str(admin), "records no location")
         self.assertEqual((snapshot(self.target), snapshot(admin)), (before, before_admin))
 
+    def test_a_finished_staging_checkout_git_did_not_write_in_full_is_not_published(self):
+        for name, damage in (("no HEAD", lambda admin: (admin / "HEAD").unlink()),
+                             ("an empty commondir", lambda admin: (admin / "commondir").write_text(""))):
+            with self.subTest(name):
+                self.finished_but_unpublished()
+                admin = self.registration(self.staging).admin
+                damage(admin)
+                paths = (self.staging, admin, self.lab._claim_file(self.revision))
+                before = [snapshot(p) if p.is_dir() else p.read_bytes() for p in paths]
+                with self.watching() as calls:
+                    self.refused("not provably this path's", str(self.staging), str(admin))
+                self.assertEqual(calls, [])  # not moved, repaired, or inspected by git
+                self.assertEqual([snapshot(p) if p.is_dir() else p.read_bytes() for p in paths], before)
+                self.assertFalse(os.path.lexists(self.target))
+                shutil.rmtree(self.staging)
+                shutil.rmtree(admin)
+                self.lab._release(self.revision)
+
     def test_a_finished_staging_checkout_with_a_truncated_reverse_link_is_preserved_and_refused(self):
         self.finished_but_unpublished()
         admin = self.registration(self.staging).admin

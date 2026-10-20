@@ -136,8 +136,10 @@ class Lab:
                 raise LabError(f"lab staging checkout exists beside {target}; preserve and inspect {staging}")
             if leftover.complete:
                 self._identity(staging, leftover, revision)
-                if not (leftover.marked and leftover.recorded == os.path.realpath(staging / ".git") and claimed):
-                    raise self._unproven(staging, leftover, "and the lab's claim do not both name it", "registration")
+                if not (leftover.marked and leftover.recorded == os.path.realpath(staging / ".git") and claimed
+                        and leftover.common_ok and leftover.head == revision):
+                    raise self._unproven(staging, leftover, "or the lab's claim, HEAD or common directory cannot be "
+                                         "verified in full", "registration")
                 self._publish(staging, target, revision)
             else:
                 self._recover(staging, leftover, revision, claimed)
