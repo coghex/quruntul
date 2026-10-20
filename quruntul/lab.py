@@ -107,44 +107,71 @@ class Lab:
             # A publish that stopped after the move: the entry still records our staging path.
             self._identity(target, registration, revision)
             command(["git", "worktree", "repair", str(target)], self.root)
+        claimed = self._claimed(staging, revision)
         leftover = worktree.inspect(self.common, staging)
         if os.path.lexists(staging) or leftover.admin is not None:
             if leftover.complete and registration:
                 raise LabError(f"lab staging checkout exists beside {target}; preserve and inspect {staging}")
             if leftover.complete:
-                self._identity(staging, leftover, revision)
-                self._publish(staging, target)
+                self._identity(staging, leftover, revision, claimed)
+                self._publish(staging, target, revision)
             else:
-                self._recover(staging, leftover, revision)
+                self._recover(staging, leftover, revision, claimed)
+        self._release(revision)
         if registration and not registration.complete:
             self._recover(target, registration, revision)
         if not os.path.lexists(target):
+            self._claim(staging, revision)
             # Held by git too, so a git left running by a killed lab keeps others out of its half-made staging.
             command(["git", "worktree", "add", "--detach", str(staging), revision], self.root, timeout=600,
                     pass_fds=(lock.fileno(),))
-            self._publish(staging, target)
+            self._publish(staging, target, revision)
 
-    def _publish(self, staging: Path, target: Path) -> None:
+    def _publish(self, staging: Path, target: Path, revision: str) -> None:
         os.rename(staging, target)
         command(["git", "worktree", "repair", str(target)], self.root)
+        self._release(revision)
 
-    def _identity(self, path: Path, registration: worktree.Registration, revision: str) -> None:
+    # The lab's claim on a staging path, written before git creates anything there. Git's own record of an
+    # add begins only after it has made the directory, so without this a kill in between leaves a directory
+    # nothing distinguishes from a stranger's. It binds the full path and revision, and is under the lock.
+
+    def _claim_file(self, revision: str) -> Path:
+        return self.directory / "staging" / f"{revision}.json"
+
+    def _claim(self, staging: Path, revision: str) -> None:
+        atomic_json(self._claim_file(revision), dict(path=os.path.realpath(staging), revision=revision,
+                                                     common=os.path.realpath(self.common)))
+
+    def _claimed(self, staging: Path, revision: str) -> bool:
+        try:
+            claim = json.loads(self._claim_file(revision).read_text())
+        except (OSError, ValueError):
+            return False
+        return claim == dict(path=os.path.realpath(staging), revision=revision, common=os.path.realpath(self.common))
+
+    def _release(self, revision: str) -> None:
+        self._claim_file(revision).unlink(missing_ok=True)
+
+    def _identity(self, path: Path, registration: worktree.Registration, revision: str, claimed: bool = False) -> None:
         """Refuse a path that is not a worktree this repository made, or is at another revision or attached.
 
         Called before anything is done to it, so what is refused is never removed or modified.
         """
-        if not registration.foreign and not registration.owned:
+        if registration.foreign:
+            raise LabError(f"unexpected checkout at {path}")
+        if not registration.owned and not claimed:
             raise LabError(f"unexpected checkout at {path}: nothing ties it to this repository's worktrees, "
                            "so it is preserved for inspection")
         head = registration.head
         if head is not None and head.startswith("ref:"):
             raise LabError(f"lab checkout is no longer detached: {path}")
-        if registration.foreign or (head is not None and head != revision):
+        if head is not None and head != revision:
             raise LabError(f"unexpected checkout at {path}")
 
-    def _recover(self, path: Path, registration: worktree.Registration, revision: str) -> None:
+    def _recover(self, path: Path, registration: worktree.Registration, revision: str, claimed: bool = False) -> None:
         """Remove a checkout whose creation never finished, only if all of it is committed content."""
-        self._identity(path, registration, revision)
+        self._identity(path, registration, revision, claimed)
         problems = worktree.pristine_problems(self.root, path, revision)
         if problems:
             raise LabError(f"lab checkout was never completed (interrupted git worktree add): {path}; it is not "

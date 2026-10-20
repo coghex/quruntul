@@ -8,6 +8,7 @@ compiler, a display or a network.
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 from pathlib import Path
 import shlex
@@ -118,6 +119,13 @@ class CheckoutFixture(LabFixture):
         out = subprocess.run(["git", "-C", str(self.work), "worktree", "list", "--porcelain"],
                              capture_output=True, text=True, check=True).stdout
         return [os.path.realpath(line[len("worktree "):]) for line in out.splitlines() if line.startswith("worktree ")]
+
+    def orphan_entry(self, name) -> Path:
+        """An entry git made for an add that was killed before it wrote a gitdir: only its lock."""
+        entry = self.lab.common / "worktrees" / name
+        entry.mkdir(parents=True)
+        (entry / "locked").write_text("initializing\n")
+        return entry
 
     def registration(self, path):
         return worktree.inspect(self.lab.common, path)
@@ -294,29 +302,59 @@ class IncompleteCheckoutTests(CheckoutFixture):
                 self.assertEqual(snapshot(path), before)
                 shutil.rmtree(path)
 
-    def test_an_add_killed_before_git_wrote_its_links_is_recovered(self):
-        """Git made the directory and an entry holding only its initializing lock, and nothing else."""
-        for path in (self.staging, self.target):
-            with self.subTest(path.name):
-                path.mkdir(parents=True)
-                admin = self.lab.common / "worktrees" / path.name
-                admin.mkdir(parents=True)
-                (admin / "locked").write_text("initializing\n")
-                registration = self.registration(path)
-                self.assertEqual((registration.admin, registration.complete), (admin, False))
+    def test_an_add_killed_before_git_wrote_its_links_is_recovered_by_the_labs_claim(self):
+        """Git made the directory, and perhaps an entry holding only its lock, and nothing that names either."""
+        for name, make in (("no entry", lambda: None),
+                           ("an entry with only the lock", lambda: self.orphan_entry("-staging-" + self.revision)),
+                           ("an empty gitdir link", lambda: (self.orphan_entry("-staging-" + self.revision) / "gitdir")
+                            .write_text(""))):
+            with self.subTest(name):
+                shutil.rmtree(self.lab.common / "worktrees" / ("-staging-" + self.revision), ignore_errors=True)
+                self.staging.mkdir(parents=True)
+                make()
+                self.lab._claim(self.staging, self.revision)
+                self.assertFalse(self.registration(self.staging).owned)
                 self.assertEqual(self.lab.checkout(self.revision), self.target)
                 self.assertEqual(sorted(self.registered()), sorted([os.path.realpath(self.work),
                                                                     os.path.realpath(self.target)]))
-                self.assertFalse(os.path.lexists(admin))
+                self.assertFalse(self.lab._claim_file(self.revision).exists())
                 git(self.work, "worktree", "remove", "--force", str(self.target))
 
-    def test_an_entry_of_another_name_does_not_tie_a_bare_directory_to_the_repository(self):
+    def test_a_staging_directory_whose_git_marker_was_begun_but_not_written_is_recovered_by_the_claim(self):
         self.staging.mkdir(parents=True)
-        admin = self.lab.common / "worktrees" / "unrelated"
-        admin.mkdir(parents=True)
-        (admin / "locked").write_text("initializing\n")
-        self.refused("unexpected checkout at", str(self.staging))
-        self.assertTrue(self.staging.is_dir() and admin.is_dir())
+        (self.staging / ".git").write_text("")
+        self.assertFalse(self.registration(self.staging).foreign)
+        self.refused("unexpected checkout at", str(self.staging))  # nothing but its contents to go on
+        self.assertTrue((self.staging / ".git").exists())
+        self.lab._claim(self.staging, self.revision)
+        self.assertEqual(self.lab.checkout(self.revision), self.target)
+
+    def test_a_claim_of_another_path_revision_or_repository_does_not_make_a_directory_ours(self):
+        self.staging.mkdir(parents=True)
+        (self.staging / "probe.py").write_bytes((self.work / "probe.py").read_bytes()[:20])
+        before = snapshot(self.staging)
+        claim = dict(path=os.path.realpath(self.staging), revision=self.revision,
+                     common=os.path.realpath(self.lab.common))
+        for field, value in (("path", str(self.base / "other")), ("revision", "0" * 40),
+                             ("common", str(Path(self.temp.name) / "other.git"))):
+            with self.subTest(field):
+                self.lab._claim_file(self.revision).parent.mkdir(parents=True, exist_ok=True)
+                self.lab._claim_file(self.revision).write_text(json.dumps(dict(claim, **{field: value})))
+                self.refused("unexpected checkout at", str(self.staging))
+                self.assertEqual(snapshot(self.staging), before)
+
+    def test_a_same_named_worktree_elsewhere_does_not_tie_a_bare_directory_to_the_repository(self):
+        elsewhere = Path(self.temp.name) / "elsewhere" / self.revision
+        self.kill_add(elsewhere)
+        entry = self.registration(elsewhere).admin
+        orphan = self.orphan_entry(self.revision + "1")  # named as git numbers a taken name, with no gitdir yet
+        self.target.mkdir(parents=True)
+        (self.target / "probe.py").write_bytes((self.work / "probe.py").read_bytes()[:20])
+        before, before_entry, before_elsewhere = snapshot(self.target), snapshot(entry), snapshot(elsewhere)
+        self.refused("unexpected checkout at", str(self.target))
+        self.assertEqual((snapshot(self.target), snapshot(entry), snapshot(elsewhere)),
+                         (before, before_entry, before_elsewhere))
+        self.assertTrue(orphan.is_dir())
 
     def test_an_entry_whose_common_directory_is_another_repository_is_preserved(self):
         clone = Path(self.temp.name) / "clone"

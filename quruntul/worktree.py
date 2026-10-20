@@ -10,7 +10,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 from pathlib import Path
-import re
 import stat
 import subprocess
 
@@ -34,7 +33,10 @@ class Registration:
 
     @property
     def owned(self) -> bool:
-        """This repository's own record, or the trace of one, ties the path to a worktree add; a bare directory has none."""
+        """This repository's own record, or the trace of one, ties the path to a worktree add; a bare directory has none.
+
+        An add killed before git wrote any link leaves no such trace; the lab's own claim covers that window.
+        """
         return self.admin is not None or self.dangling
 
     @property
@@ -56,6 +58,8 @@ def inspect(common: Path, path: Path) -> Registration:
             text = marker.read_text(encoding="utf-8", errors="replace").strip()
         except OSError:
             return Registration(None, foreign=True)
+        if not text:
+            return Registration(None)  # git created the file and stopped before writing it
         if not text.startswith("gitdir:"):
             return Registration(None, foreign=True)
         named = Path(path, text[len("gitdir:"):].strip())
@@ -89,18 +93,12 @@ def _recorded(admin: Path) -> str | None:
 
 
 def _admin_recording(worktrees: str, path: Path) -> Path | None:
-    """The entry for a path git never wrote a .git file into.
-
-    Its gitdir names path/.git, or, when the add stopped before writing that, it has no gitdir
-    yet and bears the name git gives the path (its basename, numbered if that was taken).
-    """
+    """The entry whose gitdir names path/.git, for a path git never wrote a .git file into."""
     if not os.path.isdir(worktrees):
         return None
     wanted = os.path.realpath(path / ".git")
-    named = re.compile(re.escape(path.name) + r"\d*")
     for admin in sorted(Path(worktrees).iterdir()):
-        recorded = _recorded(admin)
-        if recorded == wanted or (recorded is None and not (admin / "gitdir").exists() and named.fullmatch(admin.name)):
+        if _recorded(admin) == wanted:
             return admin
     return None
 
