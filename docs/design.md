@@ -381,8 +381,10 @@ lock. The lab never gives the "has edits" refusal for an incomplete checkout.
   to a branch (`unexpected checkout at …`, `lab checkout is no longer detached`),
   and a bare directory nothing ties to this repository's worktrees are refused
   and left alone. The lab records the claim (full staging path, revision and
-  repository) under `.git/quruntul/staging/` and drops it only after the staging
-  checkout was recovered or published, so a refusal keeps it. If the link names
+  repository) under `.git/quruntul/staging/`. It is validated before use and
+  stays available through the repair of an interrupted move's registration; it
+  is dropped only after the staging checkout was recovered or published, so a
+  refusal keeps it. If the link names
   another path, is empty or missing, no claim matches, or only one marker is
   present, the directory and the registration are both preserved and the call
   refuses, naming both paths.
