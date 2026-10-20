@@ -349,12 +349,16 @@ locked or incomplete ones.
 git finished, then repairs the worktree's registration to the final path. The
 lock is also held by the `git` the lab starts, so a `git` left running by a killed
 lab keeps other runs out of its staging checkout until it ends. If the lab is
-killed at any point during the add, nothing exists at `<revision>`, and the next
-call at that revision creates it normally. A finished staging checkout that was
-not yet moved (killed between the add and the move) is moved into place as it is,
-never deleted or reset; a move that stopped after the rename, whose registration
-still records the staging path, is identity-checked and then repaired by the next
-call. A moved worktree that does not record the staging path is never repaired.
+killed at any point during the add, nothing exists at `<revision>`; the next
+call at that revision creates it normally once the staging leftover is recovered
+or, when that leftover cannot be proven the lab's (below), refuses and preserves it. A finished staging checkout that was
+not yet moved (killed between the add and the move) and whose registration and
+claim name it is moved into place as it is, never deleted or reset. A move that
+stopped after the rename, whose registration still records the staging path and
+which the lab's claim names, is identity-checked and then repaired by the next
+call; a registration that records no location, another path, or has no claim is
+never repaired: the directory and the registration are preserved and the call
+refuses.
 
 **Incomplete checkouts.** A checkout whose creation never completed (an
 interrupted `git worktree add`, including one an earlier engine left at the final
@@ -363,20 +367,25 @@ reports every tracked file deleted: the worktree is locked with the reason
 `initializing`, or has no index. Completed means an index and no `initializing`
 lock. The lab never gives the "has edits" refusal for an incomplete checkout.
 
-- Only the observed failure is recovered automatically: the lab's own interrupted
-  `git worktree add`, whose registration is locked `initializing` or has no index,
-  that is provably the candidate's. Identity is checked first, as for any
-  checkout: a registration belonging to another repository (its `commondir`), a
-  worktree at another revision or attached to a branch (`unexpected checkout at …`,
-  `lab checkout is no longer detached`), and a bare directory nothing ties to this
-  repository's worktrees are refused and left alone. Provable then means the
-  registration's `gitdir` link names exactly the candidate path and, for a staging
-  path, the lab's claim names the same path and revision (before the add the lab
-  durably records the full staging path, revision and repository under
-  `.git/quruntul/staging/`, and drops it once the checkout is moved into place).
-  If the link names another path, is empty or is missing, or no claim names the
-  staging path, the directory and the registration are both preserved and the
-  call refuses, naming both paths.
+- Detection is either marker: the `initializing` lock or a missing index marks a
+  checkout incomplete. Automatic removal and recreation needs more: **both**
+  markers, pristine contents (below) and proven ownership, so only the observed
+  failure, the lab's own interrupted `git worktree add`, is recovered. Identity is
+  checked first, as for any checkout: a registration belonging to another
+  repository (its `commondir`), a worktree at another revision or attached to a
+  branch (`unexpected checkout at …`, `lab checkout is no longer detached`), and a
+  bare directory nothing ties to this repository's worktrees are refused and left
+  alone. Ownership of every recovery candidate, a final path included, means two
+  things: the registration's `gitdir` link names exactly that path, and a durable
+  claim, made by the lab *before* it ran its add, names the same path and
+  revision. The lab records that claim (full staging path, revision and
+  repository) under `.git/quruntul/staging/` and drops it once the checkout is
+  moved into place; it never makes one for a directory that already exists. So a
+  half-made checkout an earlier engine left at the final path, which no claim can
+  vouch for, is preserved and refused however pristine it looks; an earlier
+  *completed* checkout stays reusable. If the link names another path, is empty
+  or missing, no claim matches, or only one marker is present, the directory and
+  the registration are both preserved and the call refuses, naming both paths.
 - Every other partial-write state is likewise refused and preserved rather than
   recovered: a reverse link truncated mid-repair (on a finished staging checkout
   or on a final path), a staging directory git made before it wrote any link, an
