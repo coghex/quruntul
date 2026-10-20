@@ -27,6 +27,7 @@ class Registration:
     stale: bool = False  # the entry records another location than the path
     recorded: str | None = None  # the real path of the .git the entry records; None when empty or missing
     marked: bool = False  # the path's own .git names the entry
+    common_ok: bool = False  # the entry's commondir is written and names this repository
     locked: str | None = None  # the entry's lock reason, None when unlocked
     indexed: bool = False  # the entry holds the worktree's index
     head: str | None = None  # the entry's HEAD: a commit for a detached worktree, "ref: ..." when attached
@@ -69,6 +70,7 @@ def inspect(common: Path, path: Path) -> Registration:
         return Registration(None, foreign=True)
     recorded = _recorded(admin)
     return Registration(admin, stale=recorded != os.path.realpath(marker), recorded=recorded, marked=marked,
+                        common_ok=bool(shared),
                         locked=_read(admin / "locked"), indexed=(admin / "index").exists(), head=_read(admin / "HEAD") or None)
 
 
@@ -81,7 +83,8 @@ def _read(path: Path) -> str | None:
 
 def _recorded(admin: Path) -> str | None:
     recorded = _read(admin / "gitdir")
-    return os.path.realpath(recorded) if recorded else None
+    # Git writes it relative to the entry when worktree.useRelativePaths is set.
+    return os.path.realpath(os.path.join(admin, recorded)) if recorded else None
 
 
 def _admin_recording(worktrees: str, path: Path) -> Path | None:

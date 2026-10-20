@@ -228,6 +228,17 @@ class KilledAddTests(CheckoutFixture):
         self.assertFalse(caller.is_alive())
         self.assertEqual(outcome, {"path": self.target})  # after git ended, the ordinary rules recovered it
 
+    def test_relative_worktree_links_are_resolved_against_the_registration(self):
+        git(self.work, "config", "worktree.useRelativePaths", "true")
+        self.assertEqual(self.lab.checkout(self.revision), self.target)
+        recorded = (self.registration(self.target).admin / "gitdir").read_text().strip()
+        self.assertEqual(self.lab.checkout(self.revision), self.target)  # reused, not refused
+        self.assertTrue(self.registration(self.target).recorded == os.path.realpath(self.target / ".git"), recorded)
+        git(self.work, "worktree", "remove", "--force", str(self.target))
+        self.kill_add(self.staging)
+        self.assertEqual(self.registration(self.staging).recorded, os.path.realpath(self.staging / ".git"))
+        self.assertEqual(self.lab.checkout(self.revision), self.target)  # the interrupted add is recovered
+
     def test_a_half_made_staging_checkout_with_a_registration_and_no_directory_is_cleared(self):
         self.kill_add(self.staging)
         shutil.rmtree(self.staging)
@@ -668,6 +679,45 @@ class PublishBoundaryTests(CheckoutFixture):
                     shutil.rmtree(admin)
                 shutil.rmtree(self.target)
                 self.lab._release(self.revision)
+
+    def test_a_final_path_git_did_not_write_in_full_is_refused_before_a_recoverable_staging_checkout_is_touched(self):
+        def empty_marker(admin):
+            (self.target / ".git").write_text("")
+
+        def no_head(admin):
+            (admin / "HEAD").unlink()
+
+        def empty_common_directory(admin):
+            (admin / "commondir").write_text("")
+
+        for name, damage in (("an empty .git marker", empty_marker), ("no HEAD", no_head),
+                             ("an empty commondir", empty_common_directory)):
+            with self.subTest(name):
+                self.kill_add(self.staging)
+                staging_admin = self.registration(self.staging).admin
+                git(self.work, "worktree", "add", "--detach", str(self.target), self.revision)
+                admin = self.registration(self.target).admin
+                damage(admin)
+                paths = (self.staging, self.target, staging_admin, admin, self.lab._claim_file(self.revision))
+                before = [snapshot(p) if p.is_dir() else p.read_bytes() for p in paths]
+                with self.watching() as calls:
+                    message = self.refused(str(self.target), str(admin), "rm -rf")
+                self.assertEqual(calls, [])
+                self.assertEqual([snapshot(p) if p.is_dir() else p.read_bytes() for p in paths], before)
+                self.assertTrue(self.lab._claimed(self.staging, self.revision))  # git itself cannot list some of these
+                shutil.rmtree(self.staging)
+                shutil.rmtree(staging_admin)
+                shutil.rmtree(self.target)
+                shutil.rmtree(admin)
+                self.lab._release(self.revision)
+
+    def test_every_refusal_at_a_final_path_names_the_manual_cleanup(self):
+        checkout = self.lab.checkout(self.revision)
+        admin = self.registration(checkout).admin
+        (admin / "gitdir").write_text("")
+        message = self.refused("not provably this path's", str(self.target), str(admin), "rm -rf", "worktree prune")
+        subprocess.run(shlex.split(message.split("with: ", 1)[1].split(" (then", 1)[0]), check=True)
+        self.assertFalse(os.path.lexists(self.target))
 
     def test_the_verified_interrupted_publication_succeeds_where_a_copy_with_the_same_link_does_not(self):
         self.finished_but_unpublished()

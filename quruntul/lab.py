@@ -114,12 +114,15 @@ class Lab:
         if os.path.lexists(target):
             registration = worktree.inspect(self.common, target)
             self._identity(target, registration, revision)
+            if not (registration.marked and registration.common_ok and registration.head == revision):
+                raise self._unproven(target, registration, "has a .git marker, HEAD or common directory that git "
+                                     "did not write in full", "registration", cleanup=target)
             if registration.recorded != os.path.realpath(target / ".git"):
                 moved = (registration.complete and registration.recorded == os.path.realpath(staging / ".git")
                          and not os.path.lexists(staging) and claimed)
                 if not moved:
                     raise self._unproven(target, registration, f"records {registration.recorded or 'no location'}, "
-                                         "not this path", "registration")
+                                         "not this path", "registration", cleanup=target)
                 command(["git", "worktree", "repair", str(target)], self.root)  # finish the interrupted publish
             elif not registration.complete:
                 raise LabError(f"lab checkout was never completed (interrupted git worktree add): {target}; the lab "
@@ -188,13 +191,18 @@ class Lab:
         if head is not None and head != revision:
             raise LabError(f"unexpected checkout at {path}")
 
-    @staticmethod
-    def _unproven(path: Path, registration: worktree.Registration, why: str, what: str) -> LabError:
+    def _unproven(self, path: Path, registration: worktree.Registration, why: str, what: str,
+                  cleanup: Path | None = None) -> LabError:
         """The refusal for a path and a registration that cannot be shown to belong together: both are kept."""
         lead = ("lab checkout was never completed (interrupted git worktree add)" if not registration.complete
                 else f"lab checkout {what} is not provably this path's")
+        by_hand = ""
+        if cleanup is not None:
+            by_hand = (f" After inspecting it, if nothing in it is wanted, clear it by hand with: rm -rf "
+                       f"{shlex.quote(str(cleanup))} (then, if git still lists a registration for a path that no "
+                       f"longer exists, git -C {shlex.quote(str(self.root))} worktree prune)")
         return LabError(f"{lead}: {path}; its registration {registration.admin} {why}, so the directory and the "
-                        "registration are preserved for inspection and never modified")
+                        f"registration are preserved for inspection and never modified.{by_hand}")
 
     def _recover(self, path: Path, registration: worktree.Registration, revision: str, claimed: bool) -> None:
         """Remove the staging checkout an interrupted add left, only if it is provably this lab's and all committed content.
