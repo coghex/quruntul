@@ -7,6 +7,7 @@ compiler, a display or a network.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import fcntl
 import json
 import os
@@ -22,6 +23,7 @@ from unittest.mock import patch
 
 from quruntul import worktree
 from quruntul.common import LabError, git as git_output
+from quruntul import lab as lab_module
 from quruntul.lab import Lab, STAGING
 from tests.test_lab import HERE, LabFixture, git
 
@@ -140,6 +142,23 @@ class CheckoutFixture(LabFixture):
 
     def registration(self, path):
         return worktree.inspect(self.lab.common, path)
+
+    @contextmanager
+    def watching(self):
+        """What a call does besides read files: every git command, every removal, every pristine verification."""
+        calls = []
+
+        def spy(name, real):
+            def wrapper(*args, **kwargs):
+                calls.append((name, [str(a) for a in args[:3]]))
+                return real(*args, **kwargs)
+            return wrapper
+
+        with patch("quruntul.lab.command", spy("command", lab_module.command)), \
+                patch("quruntul.lab.git", spy("git", lab_module.git)), \
+                patch("quruntul.lab.shutil.rmtree", spy("rmtree", shutil.rmtree)), \
+                patch("quruntul.lab.worktree.pristine_problems", spy("pristine", worktree.pristine_problems)):
+            yield calls
 
     def refused(self, *needles):
         with self.assertRaises(LabError) as raised:
@@ -593,7 +612,9 @@ class PublishBoundaryTests(CheckoutFixture):
             with self.subTest("claimed" if claimed else "no claim"):
                 if not claimed:
                     self.lab._release(self.revision)
-                self.refused("not provably this path's", str(self.target), str(admin))
+                with self.watching() as calls:
+                    self.refused("not provably this path's", str(self.target), str(admin))
+                self.assertEqual(calls, [])  # no status, repair, cleanup or publication ran first
                 self.assertEqual([snapshot(p) for p in (self.staging, self.target, admin)], before)
                 self.assertIn(os.path.realpath(self.staging), self.registered())
                 self.assertNotIn(os.path.realpath(self.target), self.registered())
@@ -612,10 +633,54 @@ class PublishBoundaryTests(CheckoutFixture):
         admin = self.registration(self.staging).admin
         shutil.copytree(self.staging, self.target, symlinks=True)
         before = [snapshot(p) for p in (self.staging, self.target, admin)]
-        self.refused(NEVER_COMPLETED, str(self.target), str(admin))  # before any staging cleanup
+        with self.watching() as calls:
+            self.refused(NEVER_COMPLETED, str(self.target), str(admin))  # before any staging cleanup
+        self.assertEqual(calls, [])
         self.assertEqual([snapshot(p) for p in (self.staging, self.target, admin)], before)
         self.assertTrue(self.lab._claimed(self.staging, self.revision))
         self.assertIn(os.path.realpath(self.staging), self.registered())
+
+    def test_an_invalid_final_path_is_refused_before_a_recoverable_staging_checkout_is_touched(self):
+        """Both stay: the copy, its original, the staging checkout, every registration and the durable claim."""
+        for name in ("a completed copy", "an incomplete copy"):
+            with self.subTest(name):
+                self.kill_add(self.staging)  # recoverable on its own: both markers, pristine, claimed, linked
+                staging_admin = self.registration(self.staging).admin
+                if name == "a completed copy":
+                    original = Path(self.temp.name) / "original"
+                    git(self.work, "worktree", "add", "--detach", str(original), self.revision)
+                else:
+                    original = Path(self.temp.name) / "original"
+                    self.kill_add(original)
+                original_admin = self.registration(original).admin
+                shutil.copytree(original, self.target, symlinks=True)
+                paths = (self.staging, original, self.target, staging_admin, original_admin, self.lab._claim_file(self.revision))
+                before = [snapshot(p) if p.is_dir() else p.read_bytes() for p in paths]
+                with self.watching() as calls:
+                    self.refused(str(self.target), str(original_admin))
+                self.assertEqual(calls, [])
+                self.assertEqual([snapshot(p) if p.is_dir() else p.read_bytes() for p in paths], before)
+                self.assertTrue(self.lab._claimed(self.staging, self.revision))
+                self.assertIn(os.path.realpath(self.staging), self.registered())
+                self.assertIn(os.path.realpath(original), self.registered())
+                for path, admin in ((self.staging, staging_admin), (original, original_admin)):
+                    shutil.rmtree(path)
+                    shutil.rmtree(admin)
+                shutil.rmtree(self.target)
+                self.lab._release(self.revision)
+
+    def test_the_verified_interrupted_publication_succeeds_where_a_copy_with_the_same_link_does_not(self):
+        self.finished_but_unpublished()
+        admin = self.registration(self.staging).admin
+        shutil.copytree(self.staging, self.target, symlinks=True)  # same link string, same claim, staging still there
+        before = [snapshot(p) for p in (self.staging, self.target, admin)]
+        self.refused("not provably this path's", str(self.target))
+        self.assertEqual([snapshot(p) for p in (self.staging, self.target, admin)], before)
+        shutil.rmtree(self.target)
+        os.rename(self.staging, self.target)  # now the lab's own move, stopped before the repair
+        self.assertEqual(self.lab.checkout(self.revision), self.target)
+        self.assertEqual(sorted(self.registered()), sorted([os.path.realpath(self.work), os.path.realpath(self.target)]))
+        self.assertFalse(self.lab._claim_file(self.revision).exists())
 
     def test_a_nonempty_truncated_reverse_link_on_the_final_path_is_refused(self):
         checkout = self.lab.checkout(self.revision)
