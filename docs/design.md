@@ -368,9 +368,17 @@ lock. The lab never gives the "has edits" refusal for an incomplete checkout.
   registration belongs to another repository (its `commondir`), one at another
   revision or attached to a branch (`unexpected checkout at …`, `lab checkout
   is no longer detached`), and a bare directory with no registration or `.git`
-  tying it to this repository's worktrees, however much of it looks committed. The
-  entry git makes before it writes its links (named for the path, holding only the
-  `initializing` lock) is that tie, so an add killed that early is recovered too.
+  tying it to this repository's worktrees, however much of it looks committed.
+  That tie is git's own record of the add (the entry whose `gitdir` names the
+  path, or a `.git` naming an entry of this repository) or, for a staging path
+  only, the lab's claim: before it runs the add the lab durably records the full
+  staging path, revision and repository under `.git/quruntul/staging/`, and drops
+  it once the checkout is moved into place. The claim covers the moments after git
+  made the directory and before it wrote any link, including an empty `.git` or
+  `gitdir`; a claim for another path, revision or repository ties nothing. An
+  entry git made but never wrote a `gitdir` for is not a worktree, is not listed
+  by git, and is left alone. A final path with no trace at all, such as one an
+  earlier engine's add was killed on at that moment, is preserved and refused.
 - It then verifies the checkout is *pristine*: every file below it (`.git`
   aside) is a path of the revision's committed tree of the same type, with
   content that is byte-identical to the commit's or a byte-prefix of it,
