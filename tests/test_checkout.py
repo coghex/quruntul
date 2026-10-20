@@ -313,8 +313,8 @@ class IncompleteCheckoutTests(CheckoutFixture):
     def test_the_manual_cleanup_command_in_the_refusal_clears_the_final_path(self):
         self.kill_add(self.target)
         message = self.refused(NEVER_COMPLETED)
-        command = shlex.split(message.split("by hand with: ", 1)[1])
-        subprocess.run(command, check=True, capture_output=True)
+        command = message.split("clear it by hand with: ", 1)[1].split(" (then", 1)[0]
+        subprocess.run(command, shell=True, check=True, capture_output=True)
         self.assertFalse(os.path.lexists(self.target))
         self.assertEqual(self.lab.checkout(self.revision), self.target)
 
@@ -701,7 +701,7 @@ class PublishBoundaryTests(CheckoutFixture):
                 paths = (self.staging, self.target, staging_admin, admin, self.lab._claim_file(self.revision))
                 before = [snapshot(p) if p.is_dir() else p.read_bytes() for p in paths]
                 with self.watching() as calls:
-                    message = self.refused(str(self.target), str(admin), "rm -rf")
+                    message = self.refused(str(self.target), str(admin), "rm -rf", "worktree remove --force --force")
                 self.assertEqual(calls, [])
                 self.assertEqual([snapshot(p) if p.is_dir() else p.read_bytes() for p in paths], before)
                 self.assertTrue(self.lab._claimed(self.staging, self.revision))  # git itself cannot list some of these
@@ -718,7 +718,8 @@ class PublishBoundaryTests(CheckoutFixture):
         os.rename(checkout, moved)  # its registration still records the final path
         before_admin, before_moved, before_registered = snapshot(admin), snapshot(moved), self.registered()
         with self.watching() as calls:
-            self.refused("registered at", str(self.target), "missing", str(admin), "worktree repair", "worktree prune")
+            self.refused("registered at", str(self.target), "missing", str(admin), "worktree repair",
+                         "worktree remove --force --force")
         self.assertEqual(calls, [])
         self.assertFalse(os.path.lexists(self.target) or os.path.lexists(self.staging))
         self.assertEqual((snapshot(admin), snapshot(moved), self.registered()),
@@ -735,16 +736,47 @@ class PublishBoundaryTests(CheckoutFixture):
                 before, before_admin = snapshot(checkout), snapshot(admin)
                 with self.watching() as calls:
                     self.refused("unexpected checkout at", str(self.target), "preserved for inspection", "rm -rf",
-                                 "worktree prune")
+                                 "worktree remove --force --force")
                 self.assertEqual(calls, [])
                 self.assertEqual((snapshot(checkout), snapshot(admin)), (before, before_admin))
+
+    def test_the_emitted_cleanup_clears_a_locked_incomplete_final_path_and_the_next_checkout_succeeds(self):
+        for name, remove_directory_first in (("directory present", False), ("directory already removed", True)):
+            with self.subTest(name):
+                self.kill_add(self.target)
+                (self.target / ".git").write_text("")  # git did not write its marker in full
+                if remove_directory_first:
+                    shutil.rmtree(self.target)  # what the first message's rm -rf would have done
+                    message = self.refused("registered at", str(self.target), "missing")
+                    command = message.split("clear its registration (including a lock) with: ", 1)[1]
+                else:
+                    message = self.refused(str(self.target), "preserved for inspection")
+                    command = message.split("clear it by hand with: ", 1)[1].split(" (then", 1)[0]
+                self.assertIn("worktree remove --force --force", command)
+                subprocess.run(command, shell=True, check=True, capture_output=True)
+                self.assertEqual(self.lab.checkout(self.revision), self.target)
+                self.assertTrue(self.registration(self.target).complete)
+                git(self.work, "worktree", "remove", "--force", str(self.target))
+
+    def test_the_emitted_rm_rf_is_enough_for_a_copy_and_leaves_the_original_registered(self):
+        original = Path(self.temp.name) / "original"
+        git(self.work, "worktree", "add", "--detach", str(original), self.revision)
+        admin = self.registration(original).admin
+        shutil.copytree(original, self.target, symlinks=True)
+        message = self.refused("not provably this path's")
+        self.assertIn("rm -rf", message)
+        shutil.rmtree(self.target)  # the guidance for a copy: the directory only
+        self.assertIn(os.path.realpath(original), self.registered())
+        self.assertTrue(admin.is_dir())
+        self.assertEqual(self.lab.checkout(self.revision), self.target)
 
     def test_every_refusal_at_a_final_path_names_the_manual_cleanup(self):
         checkout = self.lab.checkout(self.revision)
         admin = self.registration(checkout).admin
         (admin / "gitdir").write_text("")
-        message = self.refused("not provably this path's", str(self.target), str(admin), "rm -rf", "worktree prune")
-        subprocess.run(shlex.split(message.split("with: ", 1)[1].split(" (then", 1)[0]), check=True)
+        message = self.refused("not provably this path's", str(self.target), str(admin), "rm -rf",
+                               "worktree remove --force --force")
+        subprocess.run(message.split("clear it by hand with: ", 1)[1].split(" (then", 1)[0], shell=True, check=True)
         self.assertFalse(os.path.lexists(self.target))
 
     def test_the_verified_interrupted_publication_succeeds_where_a_copy_with_the_same_link_does_not(self):
