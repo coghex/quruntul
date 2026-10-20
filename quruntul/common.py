@@ -33,10 +33,10 @@ def text_hash(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def command(args: list[str], root: Path, timeout: float = 120) -> str:
+def command(args: list[str], root: Path, timeout: float = 120, pass_fds: tuple[int, ...] = ()) -> str:
     try:
         result = subprocess.run(args, cwd=root, text=True, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, timeout=timeout)
+                                stderr=subprocess.PIPE, timeout=timeout, pass_fds=pass_fds)
     except subprocess.TimeoutExpired as error:
         raise LabError(f"metadata command exceeded {timeout:.0f} seconds: {args!r}") from error
     if result.returncode:

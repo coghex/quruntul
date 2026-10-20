@@ -14,13 +14,15 @@ import os
 from pathlib import Path
 import platform
 import random
+import re
+import shlex
 import shutil
 import subprocess
 import time
 import uuid
 
 from quruntul import adapter as adapters
-from quruntul import history, hspec, process, report, select
+from quruntul import history, hspec, process, report, select, worktree
 from quruntul.common import LabError, atomic_json, command, file_hash, git, utc
 from quruntul.state import State
 
@@ -30,6 +32,9 @@ DEFAULT_TRIALS = 10
 DEFAULT_REFRESH_DAYS = 7
 # An ambient filter or RTS override must never silently change a trial.
 SCRUBBED = ("GHCRTS",)
+# A checkout is made beside its final path under this prefix and moved into place only once complete.
+STAGING = ".staging-"
+REVISION = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 # Why a trial of a batch under a trial deadline failed a test without Hspec naming it a failure, or
 # after Hspec had reported it passed. Each failed trial falls under at most one.
 FAILURE_CAUSES = ("timed-out", "crashed", "exited-nonzero",
@@ -73,13 +78,20 @@ class Lab:
         return ref, revision, revision == upstream
 
     def checkout(self, revision: str) -> Path:
-        """The shared detached worktree for one revision; never reset by the lab."""
+        """The shared detached worktree for one revision.
+
+        A completed checkout is never removed, reset or cleaned by the lab, edited or not. The
+        final path is only ever a complete checkout: it is made at a staging sibling and moved
+        into place once git finished. A checkout whose creation never finished (an interrupted
+        `git worktree add`, which also leaves a locked, index-less registration) is removed and
+        made again when everything in it is committed content or a truncation of it, and is
+        preserved and refused otherwise.
+        """
         base = self.common.parent.parent / f".{self.common.parent.name}-quruntul"
         base.mkdir(exist_ok=True)
         target = base / revision
-        with self._file_lock("checkouts.lock"):
-            if not target.exists():
-                command(["git", "worktree", "add", "--detach", str(target), revision], self.root, timeout=600)
+        with self._file_lock("checkouts.lock") as lock:
+            self._settle(target, base / (STAGING + revision), revision, lock)
         actual = Path(git(target, "rev-parse", "--path-format=absolute", "--git-common-dir"))
         if actual != self.common or git(target, "rev-parse", "HEAD") != revision:
             raise LabError(f"unexpected checkout at {target}")
@@ -89,12 +101,171 @@ class Lab:
             raise LabError(f"lab checkout has edits; preserve and inspect {target}, it is never reset")
         return target
 
+    def _settle(self, target: Path, staging: Path, revision: str, lock) -> None:
+        """Leave a complete checkout at target, or refuse without touching what is there.
+
+        The final path is checked first and nothing is cleaned, inspected by git, repaired or published until it
+        is: it must be a worktree of this repository whose registration links back to that very path. The one
+        exception is the lab's own move that stopped before the repair, which the lab's claim and the vanished
+        staging path vouch for. Only the staging path is ever recovered; a final path never is.
+        """
+        claimed = self._claimed(staging, revision)
+        registration = None
+        if not os.path.lexists(target):
+            missing = worktree.inspect(self.common, target)
+            if missing.admin is not None:  # registered at this path with no directory: moved away, or removed by hand
+                raise LabError(f"lab checkout is registered at {target} but missing; its registration "
+                               f"{missing.admin} is preserved and nothing was created. If it was moved, move it back "
+                               f"or run git -C {shlex.quote(str(self.root))} worktree repair <new path>; if it is gone "
+                               f"for good, clear its registration (including a lock) with: git -C "
+                               f"{shlex.quote(str(self.root))} worktree remove --force --force {shlex.quote(str(target))}")
+        if os.path.lexists(target):
+            registration = worktree.inspect(self.common, target)
+            self._identity(target, registration, revision, cleanup=True)
+            if not (registration.marked and registration.common_ok and registration.head == revision):
+                raise self._unproven(target, registration, "has a .git marker, HEAD or common directory that git "
+                                     "did not write in full", "registration", cleanup=target)
+            if registration.recorded != os.path.realpath(target / ".git"):
+                moved = (registration.complete and registration.recorded == os.path.realpath(staging / ".git")
+                         and not os.path.lexists(staging) and claimed)
+                if not moved:
+                    raise self._unproven(target, registration, f"records {registration.recorded or 'no location'}, "
+                                         "not this path", "registration", cleanup=target)
+                command(["git", "worktree", "repair", str(target)], self.root)  # finish the interrupted publish
+            elif not registration.complete:
+                raise LabError(f"lab checkout was never completed (interrupted git worktree add): {target}; the lab "
+                               f"recovers only its own staging checkout, so this one and its registration "
+                               f"{registration.admin} are preserved for inspection and never modified."
+                               + self._by_hand(target, registration))
+        leftover = worktree.inspect(self.common, staging)
+        if os.path.lexists(staging) or leftover.admin is not None:
+            if leftover.complete and registration:
+                raise LabError(f"lab staging checkout exists beside {target}; preserve and inspect {staging}")
+            if leftover.complete:
+                self._identity(staging, leftover, revision)
+                if not (leftover.marked and leftover.recorded == os.path.realpath(staging / ".git") and claimed
+                        and leftover.common_ok and leftover.head == revision):
+                    raise self._unproven(staging, leftover, "or the lab's claim, HEAD or common directory cannot be "
+                                         "verified in full", "registration")
+                self._publish(staging, target, revision)
+            else:
+                self._recover(staging, leftover, revision, claimed)
+        self._release(revision)  # reached only when nothing was refused, so a refusal keeps the claim
+        if not os.path.lexists(target):
+            self._claim(staging, revision)
+            # Held by git too, so a git left running by a killed lab keeps others out of its half-made staging.
+            command(["git", "worktree", "add", "--detach", str(staging), revision], self.root, timeout=600,
+                    pass_fds=(lock.fileno(),))
+            self._publish(staging, target, revision)
+
+    def _publish(self, staging: Path, target: Path, revision: str) -> None:
+        os.rename(staging, target)
+        command(["git", "worktree", "repair", str(target)], self.root)
+        self._release(revision)
+
+    # The lab's claim on a staging path, written before git creates anything there. Git's own record of an
+    # add begins only after it has made the directory, so without this a kill in between leaves a directory
+    # nothing distinguishes from a stranger's. It binds the full path and revision, and is under the lock.
+
+    def _claim_file(self, revision: str) -> Path:
+        return self.directory / "staging" / f"{revision}.json"
+
+    def _claim(self, staging: Path, revision: str) -> None:
+        atomic_json(self._claim_file(revision), dict(path=os.path.realpath(staging), revision=revision,
+                                                     common=os.path.realpath(self.common)))
+
+    def _claimed(self, path: Path, revision: str) -> bool:
+        try:
+            claim = json.loads(self._claim_file(revision).read_text())
+        except (OSError, ValueError):
+            return False
+        return claim == dict(path=os.path.realpath(path), revision=revision, common=os.path.realpath(self.common))
+
+    def _release(self, revision: str) -> None:
+        self._claim_file(revision).unlink(missing_ok=True)
+
+    def _by_hand(self, path: Path, registration: worktree.Registration | None = None) -> str:
+        """How to clear a refused final path by hand. A registration whose own link names the path is cleared
+        with git as well, which also clears its lock (git will not remove one whose files it cannot read, so the
+        directory goes first); otherwise only the directory is the lab's to name."""
+        root = shlex.quote(str(self.root))
+        quoted = shlex.quote(str(path))
+        if registration is not None and registration.recorded == os.path.realpath(path / ".git"):
+            return (f" After inspecting it, if nothing in it is wanted, clear it by hand with: rm -rf {quoted} && "
+                    f"git -C {root} worktree remove --force --force {quoted}")
+        return (f" After inspecting it, if nothing in it is wanted, clear it by hand with: rm -rf {quoted} (then, if "
+                f"git still lists a registration for a path that no longer exists, clear that with: git -C {root} "
+                "worktree remove --force --force <that path>)")
+
+    def _identity(self, path: Path, registration: worktree.Registration, revision: str, cleanup: bool = False) -> None:
+        """Refuse a path that is not a worktree this repository made, or is at another revision or attached.
+
+        Called before anything is done to it, so what is refused is never removed or modified. For a final path
+        the refusal also says how to clear it by hand.
+        """
+        by_hand = self._by_hand(path, registration) if cleanup else ""
+        if registration.foreign:
+            raise LabError(f"unexpected checkout at {path}; it is preserved for inspection and never modified."
+                           + by_hand)
+        if registration.admin is None:
+            raise LabError(f"unexpected checkout at {path}: nothing ties it to this repository's worktrees, "
+                           "so it is preserved for inspection." + by_hand)
+        head = registration.head
+        if head is not None and head.startswith("ref:"):
+            raise LabError(f"lab checkout is no longer detached: {path}; it is preserved for inspection."
+                           + by_hand)
+        if head is not None and head != revision:
+            raise LabError(f"unexpected checkout at {path}; it is at another revision and preserved for "
+                           "inspection." + by_hand)
+
+    def _unproven(self, path: Path, registration: worktree.Registration, why: str, what: str,
+                  cleanup: Path | None = None) -> LabError:
+        """The refusal for a path and a registration that cannot be shown to belong together: both are kept."""
+        lead = ("lab checkout was never completed (interrupted git worktree add)" if not registration.complete
+                else f"lab checkout {what} is not provably this path's")
+        by_hand = self._by_hand(cleanup, registration) if cleanup is not None else ""
+        return LabError(f"{lead}: {path}; its registration {registration.admin} {why}, so the directory and the "
+                        f"registration are preserved for inspection and never modified.{by_hand}")
+
+    def _recover(self, path: Path, registration: worktree.Registration, revision: str, claimed: bool) -> None:
+        """Remove the staging checkout an interrupted add left, only if it is provably this lab's and all committed content.
+
+        Provable means git's registration links back to exactly this path and a durable claim the lab made
+        before running its add names the same path and revision, and both markers of an unfinished add are
+        there (the `initializing` lock and no index); anything else is kept, and so is a checkout holding
+        anything but committed content. Called for the staging path only.
+        """
+        self._identity(path, registration, revision)
+        if registration.recorded != os.path.realpath(path / ".git"):
+            where = registration.recorded or "no location"
+            raise self._unproven(path, registration, f"records {where}, not this path", "registration")
+        if not claimed:
+            raise self._unproven(path, registration, "is not claimed by the lab for this path and revision",
+                                 "registration")
+        if registration.indexed or registration.locked != worktree.INITIALIZING:
+            have = "an index" if registration.indexed else "no initializing lock"
+            raise self._unproven(path, registration, f"shows only one marker of an unfinished add (it has {have})",
+                                 "registration")
+        problems = worktree.pristine_problems(self.root, path, revision)
+        if problems:
+            raise LabError(f"lab checkout was never completed (interrupted git worktree add): {path}; it is not "
+                           f"pristine ({'; '.join(problems)}), so it is preserved for inspection and never reset")
+        self.log(f"removing the never-completed lab checkout {path}: it holds only committed content")
+        try:
+            command(["git", "worktree", "remove", "--force", "--force", str(path)], self.root, timeout=300)
+        except LabError:
+            pass  # git declined; the registration was just shown to be this path's, so it is cleared directly below
+        if os.path.lexists(path):
+            shutil.rmtree(path)
+        if registration.admin.exists():
+            shutil.rmtree(registration.admin)
+
     @contextmanager
     def _file_lock(self, name: str):
         with (self.directory / name).open("a+") as handle:
             fcntl.flock(handle, fcntl.LOCK_EX)
             try:
-                yield
+                yield handle
             finally:
                 fcntl.flock(handle, fcntl.LOCK_UN)
 
@@ -1295,7 +1466,8 @@ class Lab:
         active = {r["revision"] for r in self.state.runs(active=True, limit=1000)}
         found = []
         for path in sorted(base.glob("*")) if base.exists() else []:
-            found.append(dict(path=str(path), revision=path.name, active=path.name in active))
+            if REVISION.fullmatch(path.name) and path.is_dir() and worktree.inspect(self.common, path).complete:
+                found.append(dict(path=str(path), revision=path.name, active=path.name in active))
         return found
 
 
