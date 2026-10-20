@@ -109,6 +109,8 @@ class CheckoutFixture(LabFixture):
 
     def kill_add(self, path) -> None:
         """Really interrupt `git worktree add` of the rich revision at path."""
+        if Path(path) == self.staging:
+            self.lab._claim(self.staging, self.revision)  # as the lab does before it runs the add
         self.kill(self.hold(["git", "-C", str(self.work), "worktree", "add", "--detach", str(path), self.revision]))
 
     def lab_process(self) -> subprocess.Popen:
@@ -208,11 +210,12 @@ class KilledAddTests(CheckoutFixture):
         self.assertEqual(self.lab.checkout(self.revision), self.target)
         self.assertEqual(sorted(self.registered()), sorted([os.path.realpath(self.work), os.path.realpath(self.target)]))
 
-    def test_a_half_made_staging_checkout_whose_registration_is_gone_is_cleared(self):
+    def test_a_half_made_staging_checkout_whose_registration_is_gone_is_preserved(self):
         self.kill_add(self.staging)
         shutil.rmtree(self.registration(self.staging).admin)
-        self.assertEqual(self.lab.checkout(self.revision), self.target)
-        self.assertFalse(os.path.lexists(self.staging))
+        before = snapshot(self.staging)
+        self.refused("unexpected checkout at", str(self.staging), "preserved for inspection")
+        self.assertEqual(snapshot(self.staging), before)
 
     def test_a_staging_checkout_holding_anything_else_is_preserved_not_cleared(self):
         self.kill_add(self.staging)
@@ -310,8 +313,8 @@ class IncompleteCheckoutTests(CheckoutFixture):
                 self.assertEqual(snapshot(path), before)
                 shutil.rmtree(path)
 
-    def test_an_add_killed_before_git_wrote_its_links_is_recovered_by_the_labs_claim(self):
-        """Git made the directory, and perhaps an entry holding only its lock, and nothing that names either."""
+    def test_an_add_killed_before_git_wrote_its_links_is_preserved_even_under_the_labs_claim(self):
+        """Git made the directory, and perhaps an entry holding only its lock; nothing yet links the two."""
         for name, make in (("no entry", lambda: None),
                            ("an entry with only the lock", lambda: self.orphan_entry("-staging-" + self.revision)),
                            ("an empty gitdir link", lambda: (self.orphan_entry("-staging-" + self.revision) / "gitdir")
@@ -321,21 +324,19 @@ class IncompleteCheckoutTests(CheckoutFixture):
                 self.staging.mkdir(parents=True)
                 make()
                 self.lab._claim(self.staging, self.revision)
-                self.assertFalse(self.registration(self.staging).owned)
-                self.assertEqual(self.lab.checkout(self.revision), self.target)
-                self.assertEqual(sorted(self.registered()), sorted([os.path.realpath(self.work),
-                                                                    os.path.realpath(self.target)]))
-                self.assertFalse(self.lab._claim_file(self.revision).exists())
-                git(self.work, "worktree", "remove", "--force", str(self.target))
+                entries = snapshot(self.lab.common / "worktrees")
+                before = snapshot(self.staging)
+                self.refused("unexpected checkout at", str(self.staging), "preserved for inspection")
+                self.assertEqual((snapshot(self.staging), snapshot(self.lab.common / "worktrees")), (before, entries))
+                shutil.rmtree(self.staging)
 
-    def test_a_staging_directory_whose_git_marker_was_begun_but_not_written_is_recovered_by_the_claim(self):
+    def test_a_staging_directory_whose_git_marker_was_begun_but_not_written_is_preserved(self):
         self.staging.mkdir(parents=True)
         (self.staging / ".git").write_text("")
-        self.assertFalse(self.registration(self.staging).foreign)
-        self.refused("unexpected checkout at", str(self.staging))  # nothing but its contents to go on
-        self.assertTrue((self.staging / ".git").exists())
         self.lab._claim(self.staging, self.revision)
-        self.assertEqual(self.lab.checkout(self.revision), self.target)
+        before = snapshot(self.staging)
+        self.refused("unexpected checkout at", str(self.staging))
+        self.assertEqual(snapshot(self.staging), before)
 
     def test_an_empty_git_marker_does_not_hide_the_registration_that_names_the_path(self):
         clone = Path(self.temp.name) / "clone"
@@ -374,9 +375,11 @@ class IncompleteCheckoutTests(CheckoutFixture):
         with self.subTest("completed"):
             self.finished_but_unpublished()
             (self.staging / ".git").write_text("")
+            admin = self.registration(self.staging).admin
             self.assertTrue(self.registration(self.staging).complete)
-            self.assertEqual(self.lab.checkout(self.revision), self.target)
-            self.assertEqual((self.target / "kept.txt").read_text(), "untracked work in the finished staging checkout\n")
+            before, before_admin = snapshot(self.staging), snapshot(admin)
+            self.refused("not provably this path's", str(self.staging), str(admin))
+            self.assertEqual((snapshot(self.staging), snapshot(admin)), (before, before_admin))
 
     def test_an_add_killed_while_writing_commondir_is_recovered_but_a_foreign_one_is_not(self):
         self.kill_add(self.staging)
@@ -387,19 +390,46 @@ class IncompleteCheckoutTests(CheckoutFixture):
         self.assertEqual(self.lab.checkout(self.revision), self.target)
         self.assertEqual(sorted(self.registered()), sorted([os.path.realpath(self.work), os.path.realpath(self.target)]))
 
-    def test_a_claim_of_another_path_revision_or_repository_does_not_make_a_directory_ours(self):
-        self.staging.mkdir(parents=True)
-        (self.staging / "probe.py").write_bytes((self.work / "probe.py").read_bytes()[:20])
-        before = snapshot(self.staging)
+    def test_only_the_labs_claim_of_this_path_and_revision_lets_a_staging_checkout_be_removed(self):
+        self.kill_add(self.staging)
         claim = dict(path=os.path.realpath(self.staging), revision=self.revision,
                      common=os.path.realpath(self.lab.common))
-        for field, value in (("path", str(self.base / "other")), ("revision", "0" * 40),
-                             ("common", str(Path(self.temp.name) / "other.git"))):
-            with self.subTest(field):
-                self.lab._claim_file(self.revision).parent.mkdir(parents=True, exist_ok=True)
-                self.lab._claim_file(self.revision).write_text(json.dumps(dict(claim, **{field: value})))
-                self.refused("unexpected checkout at", str(self.staging))
-                self.assertEqual(snapshot(self.staging), before)
+        admin = self.registration(self.staging).admin
+        before, before_admin = snapshot(self.staging), snapshot(admin)
+        self.lab._release(self.revision)
+        attempts = [("no claim", None)] + [
+            (field, dict(claim, **{field: value})) for field, value in (
+                ("path", str(self.base / "other")), ("revision", "0" * 40),
+                ("common", str(Path(self.temp.name) / "other.git")))]
+        for name, written in attempts:
+            with self.subTest(name):
+                if written is not None:
+                    self.lab._claim_file(self.revision).parent.mkdir(parents=True, exist_ok=True)
+                    self.lab._claim_file(self.revision).write_text(json.dumps(written))
+                self.refused(NEVER_COMPLETED, str(self.staging), str(admin), "preserved for inspection")
+                self.assertEqual((snapshot(self.staging), snapshot(admin)), (before, before_admin))
+        self.lab._claim(self.staging, self.revision)
+        self.assertEqual(self.lab.checkout(self.revision), self.target)
+
+    def test_a_registration_that_links_back_to_another_path_is_never_removed_or_rewritten(self):
+        """A copy of an interrupted worktree, .git marker and all, put at the expected path."""
+        for path in (self.staging, self.target):
+            with self.subTest(path.name):
+                original = Path(self.temp.name) / "original" / self.revision
+                self.kill_add(original)
+                (original / "notes.txt").write_text("the original's own notes\n")
+                admin = self.registration(original).admin
+                self.lab._claim(self.staging, self.revision)
+                shutil.copytree(original, path, symlinks=True)
+                self.assertEqual(self.registration(path).admin, admin)
+                before = [snapshot(p) for p in (original, path, admin)]
+                self.refused(NEVER_COMPLETED, str(path), str(admin), "preserved for inspection")
+                self.assertEqual([snapshot(p) for p in (original, path, admin)], before)
+                self.assertIn(os.path.realpath(original), self.registered())
+                git_output(original, "status", "--porcelain")  # the original still works as a worktree
+                shutil.rmtree(path)
+                shutil.rmtree(original)
+                shutil.rmtree(admin)
 
     def test_a_same_named_worktree_elsewhere_does_not_tie_a_bare_directory_to_the_repository(self):
         elsewhere = Path(self.temp.name) / "elsewhere" / self.revision
@@ -486,6 +516,24 @@ class PublishBoundaryTests(CheckoutFixture):
         self.assertFalse(self.registration(self.target).stale)
         self.assertEqual(sorted(self.registered()), sorted([os.path.realpath(self.work), os.path.realpath(self.target)]))
         self.assertEqual((self.target / "kept.txt").read_text(), "untracked work in the finished staging checkout\n")
+
+    def test_a_publication_whose_reverse_link_was_truncated_is_preserved_and_refused(self):
+        self.finished_but_unpublished()
+        admin = self.registration(self.staging).admin
+        (admin / "gitdir").write_text("")
+        os.rename(self.staging, self.target)
+        before, before_admin = snapshot(self.target), snapshot(admin)
+        self.refused("not provably this path's", str(self.target), str(admin), "records no location")
+        self.assertEqual((snapshot(self.target), snapshot(admin)), (before, before_admin))
+
+    def test_a_finished_staging_checkout_with_a_truncated_reverse_link_is_preserved_and_refused(self):
+        self.finished_but_unpublished()
+        admin = self.registration(self.staging).admin
+        (admin / "gitdir").write_text("")
+        before, before_admin = snapshot(self.staging), snapshot(admin)
+        self.refused("not provably this path's", str(self.staging), str(admin))
+        self.assertEqual((snapshot(self.staging), snapshot(admin)), (before, before_admin))
+        self.assertFalse(os.path.lexists(self.target))
 
     def test_a_moved_worktree_that_is_not_our_publication_is_never_repaired(self):
         other = git_output(self.work, "rev-parse", "HEAD~1")

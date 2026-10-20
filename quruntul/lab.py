@@ -103,20 +103,22 @@ class Lab:
     def _settle(self, target: Path, staging: Path, revision: str, lock) -> None:
         """Leave a complete checkout at target, or refuse without touching what is there."""
         registration = worktree.inspect(self.common, target) if os.path.lexists(target) else None
-        if registration and registration.complete and registration.recorded == os.path.realpath(staging / ".git"):
-            # A publish that stopped after the move: the entry still records our staging path.
-            self._identity(target, registration, revision)
-            command(["git", "worktree", "repair", str(target)], self.root)
+        if registration and registration.complete:
+            if registration.recorded is None:
+                raise self._unproven(target, registration, "records no location for it", "registration")
+            if registration.recorded == os.path.realpath(staging / ".git"):
+                # A publish that stopped after the move: the entry still records our staging path.
+                self._identity(target, registration, revision)
+                command(["git", "worktree", "repair", str(target)], self.root)
         claimed = self._claimed(staging, revision)
         leftover = worktree.inspect(self.common, staging)
         if os.path.lexists(staging) or leftover.admin is not None:
             if leftover.complete and registration:
                 raise LabError(f"lab staging checkout exists beside {target}; preserve and inspect {staging}")
             if leftover.complete:
-                self._identity(staging, leftover, revision, claimed)
-                marker = staging / ".git"
-                if marker.is_file() and not marker.read_text(errors="replace").strip():
-                    marker.write_text(f"gitdir: {leftover.admin}\n")  # the write git was stopped in; the entry has it
+                self._identity(staging, leftover, revision)
+                if not (leftover.marked and leftover.recorded == os.path.realpath(staging / ".git") and claimed):
+                    raise self._unproven(staging, leftover, "and the lab's claim do not both name it", "registration")
                 self._publish(staging, target, revision)
             else:
                 self._recover(staging, leftover, revision, claimed)
@@ -156,14 +158,14 @@ class Lab:
     def _release(self, revision: str) -> None:
         self._claim_file(revision).unlink(missing_ok=True)
 
-    def _identity(self, path: Path, registration: worktree.Registration, revision: str, claimed: bool = False) -> None:
+    def _identity(self, path: Path, registration: worktree.Registration, revision: str) -> None:
         """Refuse a path that is not a worktree this repository made, or is at another revision or attached.
 
         Called before anything is done to it, so what is refused is never removed or modified.
         """
         if registration.foreign:
             raise LabError(f"unexpected checkout at {path}")
-        if not registration.owned and not claimed:
+        if registration.admin is None:
             raise LabError(f"unexpected checkout at {path}: nothing ties it to this repository's worktrees, "
                            "so it is preserved for inspection")
         head = registration.head
@@ -172,9 +174,27 @@ class Lab:
         if head is not None and head != revision:
             raise LabError(f"unexpected checkout at {path}")
 
-    def _recover(self, path: Path, registration: worktree.Registration, revision: str, claimed: bool = False) -> None:
-        """Remove a checkout whose creation never finished, only if all of it is committed content."""
-        self._identity(path, registration, revision, claimed)
+    @staticmethod
+    def _unproven(path: Path, registration: worktree.Registration, why: str, what: str) -> LabError:
+        """The refusal for a path and a registration that cannot be shown to belong together: both are kept."""
+        lead = ("lab checkout was never completed (interrupted git worktree add)" if not registration.complete
+                else f"lab checkout {what} is not provably this path's")
+        return LabError(f"{lead}: {path}; its registration {registration.admin} {why}, so the directory and the "
+                        "registration are preserved for inspection and never modified")
+
+    def _recover(self, path: Path, registration: worktree.Registration, revision: str, claimed: bool | None = None) -> None:
+        """Remove a checkout whose creation never finished, only if it is provably this lab's and all committed content.
+
+        Provable means git's registration links back to exactly this path and, for a staging path, the lab's
+        claim names it; anything else is kept, and so is a checkout holding anything but committed content.
+        """
+        self._identity(path, registration, revision)
+        if registration.recorded != os.path.realpath(path / ".git"):
+            where = registration.recorded or "no location"
+            raise self._unproven(path, registration, f"records {where}, not this path", "registration")
+        if claimed is False:
+            raise self._unproven(path, registration, "is not claimed by the lab for this path and revision",
+                                 "registration")
         problems = worktree.pristine_problems(self.root, path, revision)
         if problems:
             raise LabError(f"lab checkout was never completed (interrupted git worktree add): {path}; it is not "
@@ -183,10 +203,10 @@ class Lab:
         try:
             command(["git", "worktree", "remove", "--force", "--force", str(path)], self.root, timeout=300)
         except LabError:
-            pass  # a registration git no longer matches to a path; cleared directly below
+            pass  # git declined; the registration was just shown to be this path's, so it is cleared directly below
         if os.path.lexists(path):
             shutil.rmtree(path)
-        if registration.admin is not None and registration.admin.exists():
+        if registration.admin.exists():
             shutil.rmtree(registration.admin)
 
     @contextmanager

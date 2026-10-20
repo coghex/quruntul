@@ -24,20 +24,12 @@ class Registration:
     """What this repository records about a worktree path."""
     admin: Path | None  # the entry under <common>/worktrees; None when this repository has none for the path
     foreign: bool = False  # the path's own .git or the entry's common directory is not this repository's
-    dangling: bool = False  # the path's .git names an entry of this repository that no longer exists
     stale: bool = False  # the entry records another location than the path
-    recorded: str | None = None  # the real path of the .git the entry records
+    recorded: str | None = None  # the real path of the .git the entry records; None when empty or missing
+    marked: bool = False  # the path's own .git names the entry
     locked: str | None = None  # the entry's lock reason, None when unlocked
     indexed: bool = False  # the entry holds the worktree's index
     head: str | None = None  # the entry's HEAD: a commit for a detached worktree, "ref: ..." when attached
-
-    @property
-    def owned(self) -> bool:
-        """This repository's own record, or the trace of one, ties the path to a worktree add; a bare directory has none.
-
-        An add killed before git wrote any link leaves no such trace; the lab's own claim covers that window.
-        """
-        return self.admin is not None or self.dangling
 
     @property
     def complete(self) -> bool:
@@ -49,8 +41,7 @@ def inspect(common: Path, path: Path) -> Registration:
     path = Path(path)
     worktrees = os.path.realpath(Path(common) / "worktrees")
     marker = path / ".git"
-    dangling = False
-    named = None
+    marked = False
     if marker.is_symlink() or marker.is_dir():
         return Registration(None, foreign=True)
     if marker.is_file():
@@ -67,17 +58,17 @@ def inspect(common: Path, path: Path) -> Registration:
             if os.path.realpath(named.parent) != worktrees:
                 return Registration(None, foreign=True)
             admin = named if named.is_dir() else None
-            dangling = admin is None
+            marked = admin is not None
     else:
         admin = _admin_recording(worktrees, path)
     if admin is None:
-        return Registration(None, dangling=dangling)
+        return Registration(None)
     # Git names the entry's repository in commondir (absent or empty until the add has written it); a different one is foreign.
     shared = _read(admin / "commondir")
     if shared and os.path.realpath(admin / shared) != os.path.realpath(common):
         return Registration(None, foreign=True)
     recorded = _recorded(admin)
-    return Registration(admin, stale=recorded != os.path.realpath(marker), recorded=recorded,
+    return Registration(admin, stale=recorded != os.path.realpath(marker), recorded=recorded, marked=marked,
                         locked=_read(admin / "locked"), indexed=(admin / "index").exists(), head=_read(admin / "HEAD") or None)
 
 
