@@ -23,9 +23,15 @@ RETIRED = ("autotest",)  # replaced by `$test N`
 
 def plan(codex_home: Path, bin_dir: Path, claude_home: Path | None = None) -> list[dict]:
     actions = []
+    seen = set()
     for home in (codex_home, claude_home):
-        if home is not None:
-            actions += _skill_actions(home)
+        # One skills directory can serve both clients (a symlinked
+        # ~/.claude/skills); plan it once, or the second pass would link over
+        # the first pass's links.
+        if home is None or (home / "skills").resolve() in seen:
+            continue
+        seen.add((home / "skills").resolve())
+        actions += _skill_actions(home)
     command = bin_dir / "quruntul"
     source = REPO / "bin" / "quruntul"
     if command.is_symlink() and command.resolve() == source.resolve():

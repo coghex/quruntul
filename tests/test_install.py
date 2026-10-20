@@ -67,6 +67,15 @@ class InstallTests(unittest.TestCase):
         backups = list(self.claude.glob("skills-superseded-*"))
         self.assertEqual((backups[0] / "test" / "SKILL.md").read_text(), "old test")
 
+    def test_a_shared_skills_directory_is_linked_once(self):
+        self.claude.mkdir()
+        (self.claude / "skills").symlink_to(self.home / "skills")
+        result = self.run_install("--apply")
+        links = [a for a in result["actions"] if a["action"] == "link" and a["path"].endswith("/test")]
+        self.assertEqual(len(links), 1)
+        self.assertTrue((self.home / "skills" / "test").is_symlink())
+        self.assertTrue((self.bin / "quruntul").is_symlink())
+
     def test_no_claude_leaves_claude_untouched(self):
         self.run_install("--apply", "--no-claude")
         self.assertFalse(self.claude.exists())
