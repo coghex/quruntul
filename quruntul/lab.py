@@ -15,6 +15,7 @@ from pathlib import Path
 import platform
 import random
 import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -101,20 +102,31 @@ class Lab:
         return target
 
     def _settle(self, target: Path, staging: Path, revision: str, lock) -> None:
-        """Leave a complete checkout at target, or refuse without touching what is there."""
-        registration = worktree.inspect(self.common, target) if os.path.lexists(target) else None
+        """Leave a complete checkout at target, or refuse without touching what is there.
+
+        The final path is checked first and nothing is cleaned, inspected by git, repaired or published until it
+        is: it must be a worktree of this repository whose registration links back to that very path. The one
+        exception is the lab's own move that stopped before the repair, which the lab's claim and the vanished
+        staging path vouch for. Only the staging path is ever recovered; a final path never is.
+        """
         claimed = self._claimed(staging, revision)
-        if registration and registration.complete:
-            if registration.recorded is None:
-                raise self._unproven(target, registration, "records no location for it", "registration")
-            if registration.recorded == os.path.realpath(staging / ".git") and not os.path.lexists(staging):
-                # A publish that stopped after the move: staging is gone and the entry still records its path.
-                # With staging still there this is a copy, and the original's registration is not ours to rewrite.
-                self._identity(target, registration, revision)
-                if not claimed:
-                    raise self._unproven(target, registration, "records the staging path but no lab claim names it",
-                                         "registration")
-                command(["git", "worktree", "repair", str(target)], self.root)
+        registration = None
+        if os.path.lexists(target):
+            registration = worktree.inspect(self.common, target)
+            self._identity(target, registration, revision)
+            if registration.recorded != os.path.realpath(target / ".git"):
+                moved = (registration.complete and registration.recorded == os.path.realpath(staging / ".git")
+                         and not os.path.lexists(staging) and claimed)
+                if not moved:
+                    raise self._unproven(target, registration, f"records {registration.recorded or 'no location'}, "
+                                         "not this path", "registration")
+                command(["git", "worktree", "repair", str(target)], self.root)  # finish the interrupted publish
+            elif not registration.complete:
+                raise LabError(f"lab checkout was never completed (interrupted git worktree add): {target}; the lab "
+                               f"recovers only its own staging checkout, so this one and its registration "
+                               f"{registration.admin} are preserved for inspection and never modified. After "
+                               f"inspecting it, clear it by hand with: git -C "
+                               f"{shlex.quote(str(self.root))} worktree remove --force --force {shlex.quote(str(target))}")
         leftover = worktree.inspect(self.common, staging)
         if os.path.lexists(staging) or leftover.admin is not None:
             if leftover.complete and registration:
@@ -126,9 +138,7 @@ class Lab:
                 self._publish(staging, target, revision)
             else:
                 self._recover(staging, leftover, revision, claimed)
-        self._release(revision)
-        if registration and not registration.complete:
-            self._recover(target, registration, revision, self._claimed(target, revision))
+        self._release(revision)  # reached only when nothing was refused, so a refusal keeps the claim
         if not os.path.lexists(target):
             self._claim(staging, revision)
             # Held by git too, so a git left running by a killed lab keeps others out of its half-made staging.
@@ -187,12 +197,12 @@ class Lab:
                         "registration are preserved for inspection and never modified")
 
     def _recover(self, path: Path, registration: worktree.Registration, revision: str, claimed: bool) -> None:
-        """Remove a checkout whose creation never finished, only if it is provably this lab's and all committed content.
+        """Remove the staging checkout an interrupted add left, only if it is provably this lab's and all committed content.
 
         Provable means git's registration links back to exactly this path and a durable claim the lab made
         before running its add names the same path and revision, and both markers of an unfinished add are
         there (the `initializing` lock and no index); anything else is kept, and so is a checkout holding
-        anything but committed content. A claim is never made for a directory that already exists.
+        anything but committed content. Called for the staging path only.
         """
         self._identity(path, registration, revision)
         if registration.recorded != os.path.realpath(path / ".git"):

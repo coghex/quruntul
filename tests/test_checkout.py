@@ -260,19 +260,39 @@ class IncompleteCheckoutTests(CheckoutFixture):
         self.assertEqual(flaked["outcome"], "complete")
         self.assertTrue(self.registration(self.target).complete)
 
-    def test_an_incomplete_final_path_has_no_claim_and_is_preserved_however_pristine(self):
-        """An earlier engine's half-made checkout: nothing the lab recorded before its add can vouch for it."""
+    def test_an_incomplete_final_path_is_never_recovered_however_pristine_or_claimed(self):
+        """An earlier engine's half-made checkout, or any at the final path: the lab recovers only its staging."""
         self.kill_add(self.target)
         admin = self.registration(self.target).admin
         before, before_admin = snapshot(self.target), snapshot(admin)
         self.assertEqual(worktree.pristine_problems(self.lab.root, self.target, self.revision), [])
-        message = self.refused(NEVER_COMPLETED, str(self.target), str(admin), "preserved for inspection")
-        self.assertNotIn("has edits", message)
-        self.assertEqual((snapshot(self.target), snapshot(admin)), (before, before_admin))
-        self.assertFalse(self.lab._claim_file(self.revision).exists())  # the refusal manufactured no ownership
+        for name, claim in (("no claim", False), ("a matching claim", True)):
+            with self.subTest(name):
+                if claim:
+                    self.lab._claim(self.target, self.revision)
+                message = self.refused(NEVER_COMPLETED, str(self.target), str(admin), "preserved for inspection",
+                                       "worktree remove --force --force")
+                self.assertNotIn("has edits", message)
+                self.assertEqual((snapshot(self.target), snapshot(admin)), (before, before_admin))
+                self.assertEqual(self.lab._claim_file(self.revision).exists(), claim)  # none made, one kept
+        self.lab._release(self.revision)
         flaked = self.cli("flake", "--target", "unit", code=2)
         self.assertIn(NEVER_COMPLETED, flaked["error"])
         self.assertEqual(snapshot(self.target), before)
+
+    def test_the_manual_cleanup_command_in_the_refusal_clears_the_final_path(self):
+        self.kill_add(self.target)
+        message = self.refused(NEVER_COMPLETED)
+        command = shlex.split(message.split("by hand with: ", 1)[1])
+        subprocess.run(command, check=True, capture_output=True)
+        self.assertFalse(os.path.lexists(self.target))
+        self.assertEqual(self.lab.checkout(self.revision), self.target)
+
+    def test_a_refused_staging_checkout_keeps_the_labs_claim(self):
+        self.kill_add(self.staging)
+        (self.staging / "notes.txt").write_text("not committed\n")
+        self.refused(NEVER_COMPLETED, "notes.txt")
+        self.assertTrue(self.lab._claimed(self.staging, self.revision))
 
     def test_an_incomplete_checkout_that_is_not_pristine_is_refused_and_left_untouched(self):
         def replace(path, make):
@@ -569,12 +589,42 @@ class PublishBoundaryTests(CheckoutFixture):
         admin = self.registration(self.staging).admin
         shutil.copytree(self.staging, self.target, symlinks=True)
         before = [snapshot(p) for p in (self.staging, self.target, admin)]
-        self.refused("lab staging checkout exists beside", str(self.staging))
+        for claimed in (True, False):
+            with self.subTest("claimed" if claimed else "no claim"):
+                if not claimed:
+                    self.lab._release(self.revision)
+                self.refused("not provably this path's", str(self.target), str(admin))
+                self.assertEqual([snapshot(p) for p in (self.staging, self.target, admin)], before)
+                self.assertIn(os.path.realpath(self.staging), self.registered())
+                self.assertNotIn(os.path.realpath(self.target), self.registered())
+
+    def test_a_completed_checkout_copied_from_elsewhere_to_the_final_path_leaves_the_original_alone(self):
+        original = Path(self.temp.name) / "original"
+        git(self.work, "worktree", "add", "--detach", str(original), self.revision)
+        admin = self.registration(original).admin
+        shutil.copytree(original, self.target, symlinks=True)
+        before = [snapshot(p) for p in (original, self.target, admin)]
+        self.refused("not provably this path's", str(self.target), str(admin))
+        self.assertEqual([snapshot(p) for p in (original, self.target, admin)], before)
+
+    def test_an_incomplete_staging_checkout_copied_to_the_final_path_leaves_the_original_alone(self):
+        self.kill_add(self.staging)
+        admin = self.registration(self.staging).admin
+        shutil.copytree(self.staging, self.target, symlinks=True)
+        before = [snapshot(p) for p in (self.staging, self.target, admin)]
+        self.refused(NEVER_COMPLETED, str(self.target), str(admin))  # before any staging cleanup
         self.assertEqual([snapshot(p) for p in (self.staging, self.target, admin)], before)
+        self.assertTrue(self.lab._claimed(self.staging, self.revision))
         self.assertIn(os.path.realpath(self.staging), self.registered())
-        self.lab._release(self.revision)
-        self.refused(str(self.staging))
-        self.assertEqual([snapshot(p) for p in (self.staging, self.target, admin)], before)
+
+    def test_a_nonempty_truncated_reverse_link_on_the_final_path_is_refused(self):
+        checkout = self.lab.checkout(self.revision)
+        admin = self.registration(checkout).admin
+        recorded = (admin / "gitdir").read_text()
+        (admin / "gitdir").write_text(recorded[: len(recorded) // 2])
+        before, before_admin = snapshot(checkout), snapshot(admin)
+        self.refused("not provably this path's", str(self.target), str(admin))
+        self.assertEqual((snapshot(checkout), snapshot(admin)), (before, before_admin))
 
     def test_a_publication_whose_reverse_link_was_truncated_is_preserved_and_refused(self):
         self.finished_but_unpublished()
