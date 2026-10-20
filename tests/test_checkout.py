@@ -16,6 +16,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from unittest.mock import patch
 
@@ -186,22 +187,27 @@ class KilledAddTests(CheckoutFixture):
         process = self.lab_process()
         os.kill(process.pid, signal.SIGKILL)  # the lab alone; its git add keeps running
         process.wait()
+        before = snapshot(self.staging)
+        outcome = {}
+
+        def another_call():
+            try:
+                outcome["path"] = Lab(self.work, log=lambda _: None).checkout(self.revision)
+            except Exception as error:  # reported to the test thread
+                outcome["error"] = error
+
+        caller = threading.Thread(target=another_call)
+        caller.start()
         try:
-            with (self.lab.directory / "checkouts.lock").open("a+") as handle:
-                with self.assertRaises(BlockingIOError):
-                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            caller.join(2)
+            self.assertTrue(caller.is_alive(), f"the second call did not wait for the add: {outcome}")
+            self.assertEqual(snapshot(self.staging), before)  # nothing inspected for removal, nothing removed
+            self.assertTrue(self.registration(self.staging).admin.exists())
         finally:
             os.killpg(process.pid, signal.SIGKILL)
-        deadline = time.monotonic() + 30
-        with (self.lab.directory / "checkouts.lock").open("a+") as handle:
-            while True:
-                try:
-                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except BlockingIOError:
-                    self.assertLess(time.monotonic(), deadline)
-                    time.sleep(0.05)
-        self.assertEqual(self.lab.checkout(self.revision), self.target)
+        caller.join(60)
+        self.assertFalse(caller.is_alive())
+        self.assertEqual(outcome, {"path": self.target})  # after git ended, the ordinary rules recovered it
 
     def test_a_half_made_staging_checkout_with_a_registration_and_no_directory_is_cleared(self):
         self.kill_add(self.staging)
@@ -228,13 +234,15 @@ class KilledAddTests(CheckoutFixture):
 
 
 class IncompleteCheckoutTests(CheckoutFixture):
-    """A half-made checkout at the final path, as an earlier engine left it."""
+    """Checkouts whose creation never completed."""
 
-    def test_an_incomplete_checkout_of_committed_content_and_truncations_is_recovered(self):
-        self.kill_add(self.target)
-        self.assertFalse(self.registration(self.target).complete)
-        self.assertTrue(git_output(self.target, "status", "--porcelain", "--untracked-files=no"))  # git blames the "edits"
-        (self.target / "probe.py").write_bytes((self.work / "probe.py").read_bytes()[:20])
+    def test_an_incomplete_staging_checkout_of_committed_content_and_truncations_is_recovered(self):
+        self.kill_add(self.staging)  # claimed by the lab first, as the lab does
+        registration = self.registration(self.staging)
+        self.assertEqual((registration.locked, registration.indexed, registration.complete),
+                         ("initializing", False, False))  # both markers
+        self.assertTrue(git_output(self.staging, "status", "--porcelain", "--untracked-files=no"))  # git blames "edits"
+        (self.staging / "probe.py").write_bytes((self.work / "probe.py").read_bytes()[:20])
 
         checkout = self.lab.checkout(self.revision)
 
@@ -242,13 +250,29 @@ class IncompleteCheckoutTests(CheckoutFixture):
         self.assertEqual((checkout / "probe.py").read_bytes(), (self.work / "probe.py").read_bytes())
         self.assertEqual(git_output(checkout, "status", "--porcelain", "--untracked-files=no"), "")
         self.assertEqual(sorted(self.registered()), sorted([os.path.realpath(self.work), os.path.realpath(self.target)]))
+        self.assertFalse(os.path.lexists(self.staging))
         self.assertTrue(any("never-completed" in message for message in self.messages))
 
-    def test_a_flake_through_the_cli_completes_over_an_incomplete_checkout_without_a_manual_step(self):
-        self.kill_add(self.target)
+    def test_a_flake_through_the_cli_completes_over_a_killed_labs_incomplete_checkout_without_a_manual_step(self):
+        self.kill(self.lab_process())
+        self.assertFalse(self.registration(self.staging).complete)
         flaked = self.cli("flake", "--target", "unit")
         self.assertEqual(flaked["outcome"], "complete")
         self.assertTrue(self.registration(self.target).complete)
+
+    def test_an_incomplete_final_path_has_no_claim_and_is_preserved_however_pristine(self):
+        """An earlier engine's half-made checkout: nothing the lab recorded before its add can vouch for it."""
+        self.kill_add(self.target)
+        admin = self.registration(self.target).admin
+        before, before_admin = snapshot(self.target), snapshot(admin)
+        self.assertEqual(worktree.pristine_problems(self.lab.root, self.target, self.revision), [])
+        message = self.refused(NEVER_COMPLETED, str(self.target), str(admin), "preserved for inspection")
+        self.assertNotIn("has edits", message)
+        self.assertEqual((snapshot(self.target), snapshot(admin)), (before, before_admin))
+        self.assertFalse(self.lab._claim_file(self.revision).exists())  # the refusal manufactured no ownership
+        flaked = self.cli("flake", "--target", "unit", code=2)
+        self.assertIn(NEVER_COMPLETED, flaked["error"])
+        self.assertEqual(snapshot(self.target), before)
 
     def test_an_incomplete_checkout_that_is_not_pristine_is_refused_and_left_untouched(self):
         def replace(path, make):
@@ -268,15 +292,15 @@ class IncompleteCheckoutTests(CheckoutFixture):
         }
         for name, (offender, make) in cases.items():
             with self.subTest(name):
-                self.kill_add(self.target)
-                replace(self.target / offender, make)
-                admin = self.registration(self.target).admin
-                before, before_admin = snapshot(self.target), snapshot(admin)
-                message = self.refused(NEVER_COMPLETED, str(self.target), offender, "preserved for inspection")
+                self.kill_add(self.staging)
+                replace(self.staging / offender, make)
+                admin = self.registration(self.staging).admin
+                before, before_admin = snapshot(self.staging), snapshot(admin)
+                message = self.refused(NEVER_COMPLETED, str(self.staging), offender, "preserved for inspection")
                 self.assertNotIn("has edits", message)
-                self.assertEqual((snapshot(self.target), snapshot(admin)), (before, before_admin))
-                self.assertIn(os.path.realpath(self.target), self.registered())
-                shutil.rmtree(self.target)
+                self.assertEqual((snapshot(self.staging), snapshot(admin)), (before, before_admin))
+                self.assertIn(os.path.realpath(self.staging), self.registered())
+                shutil.rmtree(self.staging)
                 shutil.rmtree(admin)
 
     def test_identity_is_refused_before_anything_is_removed(self):
@@ -460,18 +484,32 @@ class IncompleteCheckoutTests(CheckoutFixture):
                 shutil.rmtree(path)
                 shutil.rmtree(admin)
 
-    def test_a_lock_still_reading_initializing_or_a_missing_index_marks_a_complete_looking_checkout_incomplete(self):
-        for name, damage in (("lock only", lambda admin: (admin / "locked").write_text("initializing\n")),
-                             ("index only", lambda admin: (admin / "index").unlink())):
+    def test_either_marker_detects_an_incomplete_checkout_but_only_both_allow_recovery(self):
+        def lock_only(admin):  # an index is there, the initializing lock is not yet gone
+            (admin / "index").write_bytes(b"x")
+
+        def index_only(admin):  # no index, the lock is gone
+            (admin / "locked").unlink()
+
+        for name, damage in (("lock only", lock_only), ("index only", index_only)):
             with self.subTest(name):
-                checkout = self.lab.checkout(self.revision)
-                admin = self.registration(checkout).admin
-                self.assertTrue(self.registration(checkout).complete)
+                self.kill_add(self.staging)
+                admin = self.registration(self.staging).admin
                 damage(admin)
-                self.assertFalse(self.registration(checkout).complete)
-                self.assertEqual(self.lab.checkout(self.revision), self.target)
-                self.assertTrue(self.registration(self.target).complete)
-                self.assertEqual(git_output(self.target, "status", "--porcelain", "--untracked-files=no"), "")
+                self.assertFalse(self.registration(self.staging).complete)
+                before, before_admin = snapshot(self.staging), snapshot(admin)
+                self.refused(NEVER_COMPLETED, str(self.staging), str(admin), "only one marker")
+                self.assertEqual((snapshot(self.staging), snapshot(admin)), (before, before_admin))
+                shutil.rmtree(self.staging)
+                shutil.rmtree(admin)
+
+    def test_a_complete_looking_final_checkout_that_lost_its_index_is_preserved(self):
+        checkout = self.lab.checkout(self.revision)
+        admin = self.registration(checkout).admin
+        (admin / "index").unlink()
+        before, before_admin = snapshot(checkout), snapshot(admin)
+        self.refused(NEVER_COMPLETED, str(self.target))
+        self.assertEqual((snapshot(checkout), snapshot(admin)), (before, before_admin))
 
 
 class CompleteCheckoutTests(CheckoutFixture):
@@ -516,6 +554,27 @@ class PublishBoundaryTests(CheckoutFixture):
         self.assertFalse(self.registration(self.target).stale)
         self.assertEqual(sorted(self.registered()), sorted([os.path.realpath(self.work), os.path.realpath(self.target)]))
         self.assertEqual((self.target / "kept.txt").read_text(), "untracked work in the finished staging checkout\n")
+
+    def test_a_publication_stopped_after_the_move_is_not_repaired_without_the_labs_claim(self):
+        self.finished_but_unpublished()
+        admin = self.registration(self.staging).admin
+        os.rename(self.staging, self.target)
+        self.lab._release(self.revision)
+        before, before_admin = snapshot(self.target), snapshot(admin)
+        self.refused("not provably this path's", str(self.target), str(admin))
+        self.assertEqual((snapshot(self.target), snapshot(admin)), (before, before_admin))
+
+    def test_a_completed_staging_checkout_copied_to_the_final_path_leaves_the_original_registration_alone(self):
+        self.finished_but_unpublished()
+        admin = self.registration(self.staging).admin
+        shutil.copytree(self.staging, self.target, symlinks=True)
+        before = [snapshot(p) for p in (self.staging, self.target, admin)]
+        self.refused("lab staging checkout exists beside", str(self.staging))
+        self.assertEqual([snapshot(p) for p in (self.staging, self.target, admin)], before)
+        self.assertIn(os.path.realpath(self.staging), self.registered())
+        self.lab._release(self.revision)
+        self.refused(str(self.staging))
+        self.assertEqual([snapshot(p) for p in (self.staging, self.target, admin)], before)
 
     def test_a_publication_whose_reverse_link_was_truncated_is_preserved_and_refused(self):
         self.finished_but_unpublished()

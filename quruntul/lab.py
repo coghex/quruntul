@@ -103,14 +103,18 @@ class Lab:
     def _settle(self, target: Path, staging: Path, revision: str, lock) -> None:
         """Leave a complete checkout at target, or refuse without touching what is there."""
         registration = worktree.inspect(self.common, target) if os.path.lexists(target) else None
+        claimed = self._claimed(staging, revision)
         if registration and registration.complete:
             if registration.recorded is None:
                 raise self._unproven(target, registration, "records no location for it", "registration")
-            if registration.recorded == os.path.realpath(staging / ".git"):
-                # A publish that stopped after the move: the entry still records our staging path.
+            if registration.recorded == os.path.realpath(staging / ".git") and not os.path.lexists(staging):
+                # A publish that stopped after the move: staging is gone and the entry still records its path.
+                # With staging still there this is a copy, and the original's registration is not ours to rewrite.
                 self._identity(target, registration, revision)
+                if not claimed:
+                    raise self._unproven(target, registration, "records the staging path but no lab claim names it",
+                                         "registration")
                 command(["git", "worktree", "repair", str(target)], self.root)
-        claimed = self._claimed(staging, revision)
         leftover = worktree.inspect(self.common, staging)
         if os.path.lexists(staging) or leftover.admin is not None:
             if leftover.complete and registration:
@@ -124,7 +128,7 @@ class Lab:
                 self._recover(staging, leftover, revision, claimed)
         self._release(revision)
         if registration and not registration.complete:
-            self._recover(target, registration, revision)
+            self._recover(target, registration, revision, self._claimed(target, revision))
         if not os.path.lexists(target):
             self._claim(staging, revision)
             # Held by git too, so a git left running by a killed lab keeps others out of its half-made staging.
@@ -148,12 +152,12 @@ class Lab:
         atomic_json(self._claim_file(revision), dict(path=os.path.realpath(staging), revision=revision,
                                                      common=os.path.realpath(self.common)))
 
-    def _claimed(self, staging: Path, revision: str) -> bool:
+    def _claimed(self, path: Path, revision: str) -> bool:
         try:
             claim = json.loads(self._claim_file(revision).read_text())
         except (OSError, ValueError):
             return False
-        return claim == dict(path=os.path.realpath(staging), revision=revision, common=os.path.realpath(self.common))
+        return claim == dict(path=os.path.realpath(path), revision=revision, common=os.path.realpath(self.common))
 
     def _release(self, revision: str) -> None:
         self._claim_file(revision).unlink(missing_ok=True)
@@ -182,18 +186,24 @@ class Lab:
         return LabError(f"{lead}: {path}; its registration {registration.admin} {why}, so the directory and the "
                         "registration are preserved for inspection and never modified")
 
-    def _recover(self, path: Path, registration: worktree.Registration, revision: str, claimed: bool | None = None) -> None:
+    def _recover(self, path: Path, registration: worktree.Registration, revision: str, claimed: bool) -> None:
         """Remove a checkout whose creation never finished, only if it is provably this lab's and all committed content.
 
-        Provable means git's registration links back to exactly this path and, for a staging path, the lab's
-        claim names it; anything else is kept, and so is a checkout holding anything but committed content.
+        Provable means git's registration links back to exactly this path and a durable claim the lab made
+        before running its add names the same path and revision, and both markers of an unfinished add are
+        there (the `initializing` lock and no index); anything else is kept, and so is a checkout holding
+        anything but committed content. A claim is never made for a directory that already exists.
         """
         self._identity(path, registration, revision)
         if registration.recorded != os.path.realpath(path / ".git"):
             where = registration.recorded or "no location"
             raise self._unproven(path, registration, f"records {where}, not this path", "registration")
-        if claimed is False:
+        if not claimed:
             raise self._unproven(path, registration, "is not claimed by the lab for this path and revision",
+                                 "registration")
+        if registration.indexed or registration.locked != worktree.INITIALIZING:
+            have = "an index" if registration.indexed else "no initializing lock"
+            raise self._unproven(path, registration, f"shows only one marker of an unfinished add (it has {have})",
                                  "registration")
         problems = worktree.pristine_problems(self.root, path, revision)
         if problems:
